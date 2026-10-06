@@ -53,6 +53,10 @@ Review state always overrides comment text. A `CHANGES_REQUESTED` review is only
 counted as "needs you" if you haven't pushed a new commit after it — fixing feedback
 by pushing, not replying, is properly detected.
 
+### Bot Filtering & AI Reviewers
+- **Hygiene & CI Bots:** Automated accounts like `dependabot`, `github-actions`, `stale`, and CI bots are filtered out by default when `TRIAGE_IGNORE_BOTS=true`.
+- **AI Code Reviewers:** Automated reviewers like `@coderabbitai` and `@copilot-pull-request-reviewer` are **intentionally not ignored**. For personal projects, bounties, and learning, their actionable comments act like mentor reviews requiring your input. (If you ever want to treat them as background noise, add their logins to `IGNORE_BOT_LOGINS` in `github_client.py`).
+
 ## Configuration (`.triage.env`)
 
 | Variable | Default | Description |

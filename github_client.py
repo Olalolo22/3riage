@@ -25,19 +25,29 @@ ISSUE_REF_RE = re.compile(
 
 BOT_SUFFIXES = ("[bot]", "-bot", "_bot")
 
+# Standard CI, dependency management, and repository hygiene bots to ignore.
+# NOTE ON AI REVIEWERS (e.g. coderabbitai, copilot-pull-request-reviewer):
+# AI reviewers are INTENTIONALLY NOT blacklisted here by default.
+# For personal projects and learning workflows, automated reviewers act like
+# human mentors/tutors whose inline feedback and actionable reviews represent
+# real review debt you need to address.
+# If in the future you want to silence AI reviewers, add 'coderabbitai',
+# 'copilot-pull-request-reviewer', and 'sourcery-ai' here or make it configurable.
+IGNORE_BOT_LOGINS = {
+    "dependabot",
+    "github-actions",
+    "renovate",
+    "stale",
+    "codecov",
+    "coveralls",
+    "snyk-bot",
+    "sonarcloud",
+}
+
 
 def _is_bot(login: str) -> bool:
     lo = login.lower()
-    return any(lo.endswith(s) for s in BOT_SUFFIXES) or lo in {
-        "dependabot",
-        "github-actions",
-        "renovate",
-        "stale",
-        "codecov",
-        "coveralls",
-        "snyk-bot",
-        "sonarcloud",
-    }
+    return any(lo.endswith(s) for s in BOT_SUFFIXES) or lo in IGNORE_BOT_LOGINS
 
 
 class GitHubClient:
