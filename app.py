@@ -19,7 +19,12 @@ load_dotenv(".triage.env")
 from github_client import GitHubClient
 from core import run_triage
 
-app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static"),
+)
 
 # In-memory cache: {cache_key: (timestamp, data)}
 _CACHE: dict[str, tuple[float, dict]] = {}
