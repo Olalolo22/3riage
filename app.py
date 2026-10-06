@@ -41,6 +41,7 @@ def _get_client() -> tuple[GitHubClient | None, str | None]:
 
 
 @app.route("/")
+@app.route("/api/index.py")
 def index():
     return render_template("index.html")
 
