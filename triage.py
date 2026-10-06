@@ -280,10 +280,11 @@ def _print_summary(summary: dict) -> None:
               help="What to show: all (default), prs, issues, claims, forks.")
 @click.option("--repo", default=None, help="Filter to a single repo (owner/repo).")
 @click.option("--json", "output_json", is_flag=True, help="Output raw JSON instead of formatted text.")
-@click.option("--include-drafts", is_flag=True, help="Include draft PRs.")
+@click.option("--include-drafts", is_flag=True, default=None, help="Include draft PRs (overrides TRIAGE_INCLUDE_DRAFTS).")
+@click.option("--min-age-hours", default=None, type=float, help="Ignore activity younger than N hours (overrides TRIAGE_MIN_AGE_HOURS).")
 @click.option("--forks", "run_forks", is_flag=True, help="Run interactive fork assistant after report.")
 @click.option("--claims-days", default=14, show_default=True, help="How many days back to look for merged PRs.")
-def cli(mode, repo, output_json, include_drafts, run_forks, claims_days):
+def cli(mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days):
     """
     3riage — GitHub contribution triage tool.
 
@@ -306,6 +307,17 @@ def cli(mode, repo, output_json, include_drafts, run_forks, claims_days):
     ignore_repos = set(filter(None, os.getenv("TRIAGE_IGNORE_REPOS", "").split(",")))
     only_repos = set(filter(None, os.getenv("TRIAGE_ONLY_REPOS", "").split(",")))
 
+    # Drafts config: CLI flag overrides env var
+    env_drafts = os.getenv("TRIAGE_INCLUDE_DRAFTS", "false").lower() == "true"
+    final_include_drafts = include_drafts if include_drafts is not None else env_drafts
+
+    # Min age hours: CLI flag overrides env var
+    try:
+        env_min_age = float(os.getenv("TRIAGE_MIN_AGE_HOURS", "0") or "0")
+    except ValueError:
+        env_min_age = 0.0
+    final_min_age = min_age_hours if min_age_hours is not None else env_min_age
+
     if repo:
         only_repos = {repo}
 
@@ -318,11 +330,12 @@ def cli(mode, repo, output_json, include_drafts, run_forks, claims_days):
     try:
         data = run_triage(
             client,
-            include_drafts=include_drafts,
+            include_drafts=final_include_drafts,
             ignore_bots=ignore_bots,
             ignore_repos=ignore_repos,
             only_repos=only_repos,
             claims_days=claims_days,
+            min_age_hours=final_min_age,
         )
     except Exception as e:
         click.echo(_c(f"\nError fetching data: {e}", RED), err=True)

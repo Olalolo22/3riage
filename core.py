@@ -62,12 +62,72 @@ def classify(comment: str) -> str:
 # PR bucket logic
 # ---------------------------------------------------------------------------
 
-def _latest_review(reviews: list[dict], me: str) -> dict | None:
-    """Return the most recent review NOT by the current user."""
-    others = [r for r in reviews if r.get("author", {}).get("login", "").lower() != me.lower()]
-    if not others:
-        return None
-    return max(others, key=lambda r: _parse_dt(r.get("submittedAt")) or datetime.min.replace(tzinfo=timezone.utc))
+def _latest_commit_dt(pr: dict) -> datetime | None:
+    """Safely return the latest commit timestamp across all commits, independent of API ordering."""
+    commit_nodes = pr.get("commits", {}).get("nodes", [])
+    dts = []
+    for c in commit_nodes:
+        dt = _parse_dt(c.get("commit", {}).get("committedDate"))
+        if dt:
+            dts.append(dt)
+    return max(dts) if dts else None
+
+
+def _analyze_reviews(
+    reviews: list[dict], me: str, last_commit_dt: datetime | None
+) -> tuple[str | None, str, str, datetime | None, bool]:
+    """
+    Analyze reviews per reviewer to correctly handle multi-reviewer state.
+    Returns:
+      (aggregate_review_state, primary_author, primary_body, primary_at, has_unanswered_changes_requested)
+    """
+    me_lo = me.lower()
+    by_author: dict[str, dict] = {}
+    for r in reviews:
+        author = r.get("author", {}).get("login", "")
+        if not author or author.lower() == me_lo:
+            continue
+        submitted_at = _parse_dt(r.get("submittedAt"))
+        prev = by_author.get(author.lower())
+        if not prev or (submitted_at and submitted_at > (_parse_dt(prev.get("submittedAt")) or datetime.min.replace(tzinfo=timezone.utc))):
+            by_author[author.lower()] = r
+
+    if not by_author:
+        return None, "", "", None, False
+
+    has_unanswered_changes_requested = False
+    blocking_review = None
+    approved_count = 0
+    decision_reviews = [r for r in by_author.values() if r.get("state") in ("APPROVED", "CHANGES_REQUESTED")]
+
+    for r in by_author.values():
+        state = r.get("state")
+        sub_at = _parse_dt(r.get("submittedAt"))
+        if state == "CHANGES_REQUESTED":
+            if not (last_commit_dt and sub_at and last_commit_dt > sub_at):
+                has_unanswered_changes_requested = True
+                blocking_review = r
+                break
+        elif state == "APPROVED":
+            approved_count += 1
+
+    latest_overall = max(
+        by_author.values(),
+        key=lambda r: _parse_dt(r.get("submittedAt")) or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    primary = blocking_review or latest_overall
+    primary_author = primary.get("author", {}).get("login", "")
+    primary_body = _snippet(primary.get("body"))
+    primary_at = _parse_dt(primary.get("submittedAt"))
+
+    if has_unanswered_changes_requested:
+        aggregate_state = "CHANGES_REQUESTED"
+    elif decision_reviews and approved_count == len(decision_reviews):
+        aggregate_state = "APPROVED"
+    else:
+        aggregate_state = primary.get("state")
+
+    return aggregate_state, primary_author, primary_body, primary_at, has_unanswered_changes_requested
 
 
 def _their_activity(pr: dict, me: str, ignore_bots: bool) -> datetime | None:
@@ -128,11 +188,9 @@ def _your_activity(pr: dict, me: str) -> datetime | None:
             if dt:
                 candidates.append(dt)
 
-    commit_nodes = pr.get("commits", {}).get("nodes", [])
-    if commit_nodes:
-        dt = _parse_dt(commit_nodes[-1]["commit"].get("committedDate"))
-        if dt:
-            candidates.append(dt)
+    commit_dt = _latest_commit_dt(pr)
+    if commit_dt:
+        candidates.append(commit_dt)
 
     return max(candidates) if candidates else None
 
@@ -160,7 +218,7 @@ def _last_their_comment(pr: dict, me: str, ignore_bots: bool) -> dict | None:
     return comment
 
 
-def bucket_pr(pr: dict, me: str, ignore_bots: bool) -> dict:
+def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) -> dict:
     """
     Classify a single open PR into one of three buckets:
       NEEDS_YOU | WAITING_ON_THEM | PROBABLY_FINE
@@ -168,38 +226,34 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool) -> dict:
     Returns a structured dict ready for serialisation.
     """
     repo = pr["repository"]["nameWithOwner"]
-    latest_review = _latest_review(pr.get("reviews", {}).get("nodes", []), me)
-    review_state = latest_review["state"] if latest_review else None
-    review_body = _snippet(latest_review.get("body")) if latest_review else ""
-    review_author = latest_review.get("author", {}).get("login", "") if latest_review else ""
-    review_at = _parse_dt(latest_review.get("submittedAt")) if latest_review else None
+    last_commit_dt = _latest_commit_dt(pr)
+    review_state, review_author, review_body, review_at, has_unanswered_changes_requested = _analyze_reviews(
+        pr.get("reviews", {}).get("nodes", []), me, last_commit_dt
+    )
 
     their_dt = _their_activity(pr, me, ignore_bots)
     your_dt = _your_activity(pr, me)
 
+    # Filter out activity younger than min_age_hours if requested
+    if min_age_hours > 0 and their_dt:
+        age_hours = (datetime.now(timezone.utc) - their_dt).total_seconds() / 3600.0
+        if age_hours < min_age_hours:
+            their_dt = None
+
     # --- Bucket decision ---
-    if review_state == "APPROVED":
+    if has_unanswered_changes_requested:
+        bucket = "NEEDS_YOU"
+    elif review_state == "APPROVED":
         bucket = "PROBABLY_FINE"
-    elif review_state == "CHANGES_REQUESTED":
-        # Only "needs you" if you haven't pushed after the review
-        commit_nodes = pr.get("commits", {}).get("nodes", [])
-        last_commit_dt = _parse_dt(commit_nodes[-1]["commit"].get("committedDate")) if commit_nodes else None
-        if last_commit_dt and review_at and last_commit_dt > review_at:
-            # You pushed after the review — ball is back in their court
-            bucket = "WAITING_ON_THEM"
-        else:
-            bucket = "NEEDS_YOU"
     elif their_dt and your_dt and their_dt > your_dt:
         bucket = "NEEDS_YOU"
     elif your_dt and (not their_dt or your_dt >= their_dt):
-        # Check for soft sign-off
         last_comment = _last_their_comment(pr, me, ignore_bots)
         if last_comment and _SIGN_OFF_HINTS.search(last_comment.get("body", "")):
             bucket = "PROBABLY_FINE"
         else:
             bucket = "WAITING_ON_THEM"
     else:
-        # No activity from anyone yet
         bucket = "WAITING_ON_THEM"
 
     last_comment = _last_their_comment(pr, me, ignore_bots)
@@ -421,7 +475,7 @@ def build_claims_shelf(merged_prs: list[dict], days: int = 14) -> list[dict]:
                 "repo": pr["repository"]["nameWithOwner"],
                 "number": pr["number"],
                 "title": pr["title"],
-                "url": pr["url"],
+                "url": pr.get("url", ""),
                 "merged_days_ago": _days_ago(merged_at),
             }
         )
@@ -478,6 +532,7 @@ def run_triage(
     ignore_repos: set[str] | None = None,
     only_repos: set[str] | None = None,
     claims_days: int = 14,
+    min_age_hours: float = 0,
 ) -> dict:
     """
     Run a full triage and return a structured JSON-serialisable dict.
@@ -511,7 +566,7 @@ def run_triage(
 
     bucketed_prs: dict[str, list] = {"NEEDS_YOU": [], "WAITING_ON_THEM": [], "PROBABLY_FINE": []}
     for pr in open_prs:
-        result = bucket_pr(pr, client.username, ignore_bots)
+        result = bucket_pr(pr, client.username, ignore_bots, min_age_hours=min_age_hours)
         bucketed_prs[result["bucket"]].append(result)
 
     unlinked_issues = []
