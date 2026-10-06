@@ -172,7 +172,7 @@ class GitHubClient:
             author { login }
             assignees(first: 10) { nodes { login } }
             comments(last: 20) {
-              nodes { author { login } body createdAt }
+              nodes { author { login } authorAssociation body createdAt }
             }
           }
         }

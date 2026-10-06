@@ -251,21 +251,77 @@ def _build_linked_set(prs: list[dict], client: GitHubClient) -> set[tuple[str, i
     return linked
 
 
-def _issue_role(issue: dict, me: str) -> str:
-    """Determine your role in an issue: assignee > commenter > mentioned > author."""
+_APPLICATION_RE = re.compile(
+    r"(?:"
+    r"<!--\s*wave:application"
+    r"|has applied to work on this issue"
+    r"|\b(?:would like|can i|please assign|i can fix|want to|interested in)\s+(?:to\s+)?(?:work on|tackle|take|fix|handle)\b"
+    r"|\bplease assign (?:this to )?me\b"
+    r"|\bhere is my (?:execution )?plan\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_maintainer(comment: dict, repo: str) -> bool:
+    """Check if comment author is a maintainer/owner/collaborator of the repo."""
+    assoc = comment.get("authorAssociation", "")
+    if assoc in ("OWNER", "MEMBER", "COLLABORATOR"):
+        return True
+    owner = repo.split("/")[0].lower() if "/" in repo else ""
+    author = comment.get("author", {}).get("login", "").lower()
+    return author == owner
+
+
+def _analyze_issue_role_and_applications(issue: dict, me: str) -> tuple[str, bool, int, list[str]]:
+    """
+    Determine your role and check for bounty applications.
+    Returns (role, is_dimmed, applicant_count, applicant_logins).
+
+    Roles:
+      - 'assignee': Formally assigned to you (top priority debt)
+      - 'outbid': Assigned to someone else (dimmed — bid closed)
+      - 'applied': You submitted an application/proposal and issue is unassigned
+      - 'commenter': You participated in discussion, did not apply
+      - 'author': You opened the issue (dimmed if not assigned)
+      - 'mentioned': You were tagged
+    """
     me_lo = me.lower()
     author = issue.get("author", {}).get("login", "").lower()
-    assignees = [a["login"].lower() for a in issue.get("assignees", {}).get("nodes", [])]
+    assignee_logins = [a["login"].lower() for a in issue.get("assignees", {}).get("nodes", [])]
 
-    if me_lo in assignees:
-        return "assignee"
-    # Check if we commented (we were retrieved via involves:, so we're in there somewhere)
-    for comment in issue.get("comments", {}).get("nodes", []):
-        if comment.get("author", {}).get("login", "").lower() == me_lo:
-            return "commenter"
+    # Assignee cases
+    if me_lo in assignee_logins:
+        return "assignee", False, 0, []
+    if assignee_logins:
+        # Assigned to someone else — your bid was not picked
+        return "outbid", True, len(assignee_logins), assignee_logins
+
+    # Scan comments for applications and your participation
+    applicants = set()
+    me_applied = False
+    me_commented = False
+
+    for c in issue.get("comments", {}).get("nodes", []):
+        c_author = c.get("author", {}).get("login", "").lower()
+        body = c.get("body", "") or ""
+        if _APPLICATION_RE.search(body):
+            applicants.add(c_author)
+            if c_author == me_lo:
+                me_applied = True
+        if c_author == me_lo:
+            me_commented = True
+
+    applicant_count = len(applicants)
+    applicant_list = sorted(list(applicants))
+
+    if me_applied:
+        return "applied", False, applicant_count, applicant_list
+    if me_commented:
+        return "commenter", False, applicant_count, applicant_list
     if author == me_lo:
-        return "author"
-    return "mentioned"
+        return "author", True, applicant_count, applicant_list
+    return "mentioned", False, applicant_count, applicant_list
 
 
 def _days_since_my_comment(issue: dict, me: str) -> int | None:
@@ -282,7 +338,8 @@ def _days_since_my_comment(issue: dict, me: str) -> int | None:
 
 
 def _last_maintainer_comment(issue: dict, me: str, ignore_bots: bool) -> dict | None:
-    """Most recent comment on the issue NOT by the current user."""
+    """Most recent comment on the issue by a repository MAINTAINER (OWNER/MEMBER/COLLABORATOR)."""
+    repo = issue["repository"]["nameWithOwner"]
     me_lo = me.lower()
     candidates = []
     for comment in issue.get("comments", {}).get("nodes", []):
@@ -291,8 +348,9 @@ def _last_maintainer_comment(issue: dict, me: str, ignore_bots: bool) -> dict | 
             continue
         if ignore_bots and _is_bot_login(author):
             continue
-        dt = _parse_dt(comment.get("createdAt"))
-        candidates.append((dt, comment))
+        if _is_maintainer(comment, repo):
+            dt = _parse_dt(comment.get("createdAt"))
+            candidates.append((dt, comment))
     if not candidates:
         return None
     _, comment = max(candidates, key=lambda x: x[0] or datetime.min.replace(tzinfo=timezone.utc))
@@ -302,28 +360,24 @@ def _last_maintainer_comment(issue: dict, me: str, ignore_bots: bool) -> dict | 
 def classify_issue(issue: dict, me: str, ignore_bots: bool, linked: set, forked_parents: set[str]) -> dict | None:
     """
     Returns a structured dict for an unlinked involved issue, or None if it should be skipped.
-
-    - Issues you authored but are not assigned to are dimmed (author-only, low debt).
-    - Issues already linked to one of your PRs are skipped.
     """
     repo = issue["repository"]["nameWithOwner"]
     issue_key = (repo, issue["number"])
     if issue_key in linked:
         return None  # Already have a PR for this
 
-    role = _issue_role(issue, me)
+    role, is_dimmed, applicant_count, applicant_list = _analyze_issue_role_and_applications(issue, me)
 
-    # Author-only: you filed the bug but you're not assigned and haven't been asked to fix it
-    is_dimmed = (role == "author")
+    maintainer_comment = _last_maintainer_comment(issue, me, ignore_bots)
+    m_author = ""
+    m_body = ""
+    m_days = None
+    if maintainer_comment:
+        m_author = maintainer_comment.get("author", {}).get("login", "")
+        m_body = _snippet(maintainer_comment.get("body", ""))
+        m_days = _days_ago(_parse_dt(maintainer_comment.get("createdAt")))
 
-    last_comment = _last_maintainer_comment(issue, me, ignore_bots)
-    snippet_author = ""
-    snippet_body = ""
-    snippet_days = None
-    if last_comment:
-        snippet_author = last_comment.get("author", {}).get("login", "")
-        snippet_body = _snippet(last_comment.get("body", ""))
-        snippet_days = _days_ago(_parse_dt(last_comment.get("createdAt")))
+    my_last_days = _days_since_my_comment(issue, me)
 
     return {
         "type": "issue",
@@ -333,12 +387,17 @@ def classify_issue(issue: dict, me: str, ignore_bots: bool, linked: set, forked_
         "url": issue["url"],
         "role": role,
         "is_dimmed": is_dimmed,
-        "days_since_my_comment": _days_since_my_comment(issue, me),
+        "applicant_count": applicant_count,
+        "applicant_list": applicant_list,
+        "days_since_my_comment": my_last_days,
         "forked": repo.lower() in forked_parents,
-        "last_comment_author": snippet_author,
-        "last_comment_body": snippet_body,
-        "last_comment_days_ago": snippet_days,
-        "classify": classify(snippet_body),  # stub
+        "maintainer_comment_author": m_author,
+        "maintainer_comment_body": m_body,
+        "maintainer_comment_days_ago": m_days,
+        "last_comment_author": m_author,  # backwards compatibility
+        "last_comment_body": m_body,
+        "last_comment_days_ago": m_days,
+        "classify": classify(m_body),  # stub
     }
 
 
@@ -386,8 +445,8 @@ def build_fork_report(
     seen = set()
     results = []
     for issue in involved_issues:
-        role = _issue_role(issue, me)
-        if role not in ("assignee", "commenter"):
+        role, _, _, _ = _analyze_issue_role_and_applications(issue, me)
+        if role not in ("assignee", "applied", "commenter"):
             continue
         repo = issue["repository"]["nameWithOwner"]
         repo_lo = repo.lower()
@@ -461,9 +520,21 @@ def run_triage(
         if result:
             unlinked_issues.append(result)
 
-    # Sort unlinked: assignees first, then by days since last comment (oldest first)
+    # Sort unlinked: active roles first (assignee > applied > commenter > mentioned), then dimmed (author, outbid)
+    role_priority = {
+        "assignee": 0,
+        "applied": 1,
+        "commenter": 2,
+        "mentioned": 3,
+        "author": 4,
+        "outbid": 5,
+    }
     unlinked_issues.sort(
-        key=lambda i: (0 if i["role"] == "assignee" else 1, -(i["days_since_my_comment"] or 0))
+        key=lambda i: (
+            1 if i.get("is_dimmed") else 0,
+            role_priority.get(i.get("role"), 9),
+            -(i.get("days_since_my_comment") or 0),
+        )
     )
 
     claims = build_claims_shelf(merged_prs, days=claims_days)

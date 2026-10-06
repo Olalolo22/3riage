@@ -135,25 +135,39 @@ def _print_issues(issues: list[dict]) -> None:
     rows = []
     for i in active + dimmed:
         style = DIM if i.get("is_dimmed") else ""
-        role_colors = {"assignee": RED, "commenter": YELLOW, "mentioned": CYAN, "author": DIM}
+        role_colors = {
+            "assignee": RED,
+            "applied": MAGENTA,
+            "commenter": YELLOW,
+            "mentioned": CYAN,
+            "author": DIM,
+            "outbid": DIM,
+        }
         role_c = role_colors.get(i["role"], WHITE)
 
+        if i["role"] == "applied" and i.get("applicant_count", 0) > 1:
+            role_display = f"applied ({i['applicant_count']} apps)"
+        elif i["role"] == "outbid":
+            role_display = "outbid"
+        else:
+            role_display = i["role"]
+
         age_my = _age_badge(i.get("days_since_my_comment"))
-        age_them = _age_badge(i.get("last_comment_days_ago"))
+        age_them = _age_badge(i.get("maintainer_comment_days_ago"))
         forked = _c("✓", GREEN) if i.get("forked") else _c("✗", RED)
 
         rows.append(
             [
                 _c(f"{i['repo']} #{i['number']}", style + CYAN),
-                _c(i["role"], style + role_c),
+                _c(role_display, style + role_c),
                 age_my,
                 age_them,
                 forked,
-                _c(i["title"][:50], style + BOLD),
+                _c(i["title"][:48], style + BOLD),
             ]
         )
 
-    headers = ["Repo & Issue", "Role", "My last", "Their last", "Forked", "Title"]
+    headers = ["Repo & Issue", "Role", "My last", "Maintainer", "Forked", "Title"]
     click.echo()
     click.echo(
         tabulate(rows, headers=headers, tablefmt="plain")
@@ -161,14 +175,24 @@ def _print_issues(issues: list[dict]) -> None:
     )
 
     for i in active + dimmed:
-        if i.get("last_comment_body"):
-            who = f"@{i['last_comment_author']}" if i.get("last_comment_author") else ""
-            click.echo()
+        click.echo()
+        style = DIM if i.get("is_dimmed") else ""
+        click.echo(_c(f"  [{i['repo']} #{i['number']}]", CYAN) + "  " + _c(i["title"], BOLD + style))
+
+        if i.get("maintainer_comment_body"):
+            who = f"Maintainer @{i['maintainer_comment_author']}"
+            age = _age_badge(i.get("maintainer_comment_days_ago"))
+            click.echo(_c(f"  ↳ {who} ({age}): \"{i['maintainer_comment_body']}\"", style + WHITE))
+
+        if i.get("role") == "applied":
             click.echo(
-                _c(f"  [{i['repo']} #{i['number']}]", CYAN)
-                + "  " + _c(f"{who}: \"{i['last_comment_body']}\"", DIM)
+                _c(f"  ↳ Status: Applied ({i.get('applicant_count', 1)} total applicants, unassigned)", MAGENTA)
             )
-            click.echo(_c(f"  → {i['url']}", DIM))
+        elif i.get("role") == "outbid":
+            assignees_str = ", ".join(f"@{a}" for a in i.get("applicant_list", []))
+            click.echo(_c(f"  ↳ Status: Assigned to {assignees_str} (bid closed)", DIM))
+
+        click.echo(_c(f"  → {i['url']}", DIM))
 
 
 def _print_claims(claims: list[dict]) -> None:
