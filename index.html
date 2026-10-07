@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>3riage — Contributor Triage Engine</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -42,12 +42,13 @@
         <button class="filter-tab tab-claims" data-filter="claims">🏆 Claims <span class="badge" id="count-claims">0</span></button>
       </nav>
 
-      <div class="top-bar-right">
-        <div class="search-box">
-          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-          <input type="text" id="search-input" placeholder="Filter by repo, title, #..." autocomplete="off" spellcheck="false">
-          <span class="search-shortcut">/</span>
-        </div>
+      <div class="search-box">
+        <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" id="search-input" placeholder="Filter by repo, title, #..." autocomplete="off" spellcheck="false">
+        <span class="search-shortcut">/</span>
+      </div>
+
+      <div class="top-bar-actions">
         <button class="btn btn-theme-toggle" id="btn-theme-toggle" title="Toggle Light / Dark mode (T)" aria-label="Toggle theme">
           <svg class="icon-theme icon-sun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
           <svg class="icon-theme icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
@@ -59,8 +60,8 @@
       </div>
     </header>
 
-    <!-- Main Content Area: Split 2-Pane -->
-    <main class="main-content">
+    <!-- Main Content Area: Split 2-Pane on Desktop, View-Switched on Mobile -->
+    <main class="main-content" id="main-content">
       <!-- Left Pane: Dense List -->
       <section class="pane-list" id="pane-list">
         <div class="list-header">
@@ -82,6 +83,13 @@
 
       <!-- Right Pane: Inspection & Action Panel -->
       <section class="pane-detail" id="pane-detail">
+        <div class="mobile-detail-bar" id="mobile-detail-bar">
+          <button class="btn btn-back" id="btn-back-to-list" aria-label="Back to list">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            <span>Back to list</span>
+          </button>
+        </div>
+
         <div class="empty-detail-state" id="empty-detail">
           <div class="empty-icon">⌘</div>
           <h3>Select an item to inspect its state</h3>

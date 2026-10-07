@@ -75,10 +75,6 @@
   --shadow-toast: 0 4px 14px rgba(15, 23, 42, 0.08);
 }
 
-body, .top-bar, .pane-list, .pane-detail, .list-row, .decision-card, .search-box input, .filter-tab, .btn, .meta-item, .feedback-quote {
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-}
-
 * {
   box-sizing: border-box;
   margin: 0;
@@ -246,17 +242,19 @@ body {
   color: var(--color-purple);
 }
 
-/* Top Bar Right */
-.top-bar-right {
+/* Top Bar Actions & Search */
+.top-bar-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .search-box {
   position: relative;
   display: flex;
   align-items: center;
+  margin-left: auto;
 }
 
 .search-icon {
@@ -815,7 +813,190 @@ kbd {
   animation: slideUp 0.15s ease-out;
 }
 
-@keyframes slideUp {
-  from { transform: translateY(8px); opacity: 0; }
-  to { transform: translateY(0); opacity: 1; }
+/* Mobile Detail Bar */
+.mobile-detail-bar {
+  display: none;
+}
+
+/* ==========================================================================
+   Responsive / Mobile Architecture
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  body {
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  .app-container {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Top Bar Grid: 3 Clean Rows on Mobile */
+  .top-bar {
+    height: auto;
+    padding: 10px 12px 8px 12px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "brand actions"
+      "filters filters"
+      "search search";
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .top-bar-left {
+    grid-area: brand;
+    gap: 10px;
+  }
+
+  .top-bar-actions {
+    grid-area: actions;
+    gap: 6px;
+  }
+
+  .view-filters {
+    grid-area: filters;
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+    gap: 6px;
+  }
+
+  .view-filters::-webkit-scrollbar {
+    display: none;
+  }
+
+  .filter-tab {
+    flex-shrink: 0;
+    padding: 6px 10px;
+    font-size: 11.5px;
+  }
+
+  .search-box {
+    grid-area: search;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .search-box input {
+    width: 100%;
+    padding-right: 28px;
+  }
+
+  .search-box input:focus {
+    width: 100%;
+  }
+
+  /* Single Pane Stack on Mobile */
+  .main-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .pane-list {
+    width: 100%;
+    height: 100%;
+    border-right: none;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pane-detail {
+    display: none;
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    background-color: var(--bg-surface);
+  }
+
+  /* When viewing an item detail on mobile */
+  .main-content.viewing-detail .pane-list {
+    display: none;
+  }
+
+  .main-content.viewing-detail .pane-detail {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-detail-bar {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    background-color: var(--bg-canvas);
+    border-bottom: 1px solid var(--border-muted);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .btn-back {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .btn-back:active {
+    background: var(--bg-surface-active);
+  }
+
+  .detail-content {
+    padding: 16px 14px;
+    gap: 16px;
+  }
+
+  .detail-breadcrumb {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .detail-actions {
+    width: 100%;
+    display: flex;
+    gap: 8px;
+  }
+
+  .detail-actions .btn {
+    flex: 1;
+    justify-content: center;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .meta-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .list-row {
+    padding: 12px 14px;
+  }
+
+  .keyboard-hint {
+    display: none;
+  }
 }

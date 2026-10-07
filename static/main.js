@@ -29,6 +29,8 @@
   const emptyDetail = document.getElementById('empty-detail');
   const detailContent = document.getElementById('detail-content');
   const filterTabs = document.querySelectorAll('.filter-tab');
+  const mainContent = document.getElementById('main-content');
+  const btnBackToList = document.getElementById('btn-back-to-list');
 
   // -------------------------------------------------------------------------
   // Lifecycle & Fetching
@@ -252,7 +254,12 @@
       row.addEventListener('click', () => {
         const id = row.getAttribute('data-id');
         const item = flatItemsList.find(i => getItemId(i) === id);
-        if (item) selectItem(item);
+        if (item) {
+          selectItem(item);
+          if (mainContent) {
+            mainContent.classList.add('viewing-detail');
+          }
+        }
       });
     });
   }
@@ -584,7 +591,6 @@
     try {
       localStorage.setItem('3riage-theme', nextTheme);
     } catch (e) {}
-    showToast(nextTheme === 'light' ? '☀️ Switched to Light theme' : '🌙 Switched to Dark theme');
   }
 
   function moveSelection(delta) {
@@ -612,6 +618,7 @@
 
   filterTabs.forEach(tab => {
     tab.addEventListener('click', () => {
+      if (mainContent) mainContent.classList.remove('viewing-detail');
       filterTabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
       activeFilter = tab.getAttribute('data-filter');
@@ -634,8 +641,15 @@
   });
 
   btnRefresh.addEventListener('click', () => loadTriage(true));
+
   if (btnThemeToggle) {
     btnThemeToggle.addEventListener('click', toggleTheme);
+  }
+
+  if (btnBackToList) {
+    btnBackToList.addEventListener('click', () => {
+      if (mainContent) mainContent.classList.remove('viewing-detail');
+    });
   }
 
   // Expose global helpers
