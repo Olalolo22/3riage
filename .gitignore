@@ -8,3 +8,4 @@ build/
 venv/
 .env
 *.log
+github_notifications_deepdive.md
