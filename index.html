@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3riage — Contributor Triage Engine</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Bar -->
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <div class="brand">
+          <span class="brand-logo">3</span>
+          <span class="brand-name">3riage</span>
+          <span class="brand-tag">engine</span>
+        </div>
+        <div class="connection-status" id="connection-status">
+          <span class="status-dot"></span>
+          <span class="status-user" id="status-user">Connecting…</span>
+        </div>
+      </div>
+
+      <!-- Filters & Counts -->
+      <nav class="view-filters" id="view-filters">
+        <button class="filter-tab active" data-filter="all">All <span class="badge" id="count-all">0</span></button>
+        <button class="filter-tab tab-needs-you" data-filter="needs_you">⚡ Needs You <span class="badge" id="count-needs-you">0</span></button>
+        <button class="filter-tab tab-waiting" data-filter="waiting">⏳ Waiting <span class="badge" id="count-waiting">0</span></button>
+        <button class="filter-tab tab-issues" data-filter="issues">📋 Bids & Issues <span class="badge" id="count-issues">0</span></button>
+        <button class="filter-tab tab-claims" data-filter="claims">🏆 Claims <span class="badge" id="count-claims">0</span></button>
+      </nav>
+
+      <div class="top-bar-right">
+        <div class="search-box">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input type="text" id="search-input" placeholder="Filter by repo, title, #..." autocomplete="off" spellcheck="false">
+          <span class="search-shortcut">/</span>
+        </div>
+        <button class="btn btn-refresh" id="btn-refresh" title="Refresh triage state">
+          <svg class="icon-refresh" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+          <span class="refresh-text">Refresh</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content Area: Split 2-Pane -->
+    <main class="main-content">
+      <!-- Left Pane: Dense List -->
+      <section class="pane-list" id="pane-list">
+        <div class="list-header">
+          <span class="list-title" id="list-title">All Items</span>
+          <span class="list-counter" id="list-counter">0 items</span>
+        </div>
+        <div class="list-scroll" id="list-container">
+          <!-- Skeletons rendered by JS -->
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+        </div>
+        <div class="keyboard-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> or <kbd>J</kbd><kbd>K</kbd> to navigate</span>
+          <span><kbd>Enter</kbd> open GitHub</span>
+        </div>
+      </section>
+
+      <!-- Right Pane: Inspection & Action Panel -->
+      <section class="pane-detail" id="pane-detail">
+        <div class="empty-detail-state" id="empty-detail">
+          <div class="empty-icon">⌘</div>
+          <h3>Select an item to inspect its state</h3>
+          <p>3riage computes temporal ownership: whose turn it is to act, reviewer feedback, and open bounty bids.</p>
+        </div>
+
+        <div class="detail-content hidden" id="detail-content">
+          <!-- Populated by JS -->
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/main.js"></script>
+</body>
+</html>
