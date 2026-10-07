@@ -21,6 +21,7 @@
   const countIssues = document.getElementById('count-issues');
   const countClaims = document.getElementById('count-claims');
   const searchInput = document.getElementById('search-input');
+  const btnThemeToggle = document.getElementById('btn-theme-toggle');
   const btnRefresh = document.getElementById('btn-refresh');
   const listContainer = document.getElementById('list-container');
   const listTitle = document.getElementById('list-title');
@@ -562,12 +563,29 @@
     } else if (['ArrowUp', 'k', 'K'].includes(e.key)) {
       e.preventDefault();
       moveSelection(-1);
+    } else if (['t', 'T'].includes(e.key)) {
+      e.preventDefault();
+      toggleTheme();
     } else if (e.key === 'Enter') {
       if (selectedItem && selectedItem.url) {
         window.open(selectedItem.url, '_blank');
       }
     }
   });
+
+  function toggleTheme() {
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    const nextTheme = isLight ? 'dark' : 'light';
+    if (nextTheme === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    try {
+      localStorage.setItem('3riage-theme', nextTheme);
+    } catch (e) {}
+    showToast(nextTheme === 'light' ? '☀️ Switched to Light theme' : '🌙 Switched to Dark theme');
+  }
 
   function moveSelection(delta) {
     if (flatItemsList.length === 0) return;
@@ -616,9 +634,13 @@
   });
 
   btnRefresh.addEventListener('click', () => loadTriage(true));
+  if (btnThemeToggle) {
+    btnThemeToggle.addEventListener('click', toggleTheme);
+  }
 
   // Expose global helpers
   window.showToast = showToast;
+  window.toggleTheme = toggleTheme;
 
   // Initial load
   loadTriage(false);
