@@ -18,6 +18,7 @@ load_dotenv(".triage.env")
 
 from github_client import GitHubClient
 from core import run_triage
+from mock_data import get_mock_triage_data
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -47,6 +48,10 @@ def index():
 
 @app.route("/api/triage", methods=["GET"])
 def get_triage():
+    demo_param = request.args.get("demo", "").lower()
+    if demo_param in ("true", "1"):
+        return jsonify({"status": "ok", "cached": False, "is_demo": True, "data": get_mock_triage_data()})
+
     force_refresh = request.args.get("refresh", "false").lower() == "true"
     include_drafts = request.args.get(
         "drafts", os.getenv("TRIAGE_INCLUDE_DRAFTS", "false")
@@ -68,7 +73,8 @@ def get_triage():
 
     client, err = _get_client()
     if err or not client:
-        return jsonify({"status": "error", "error": err or "Client initialization failed"}), 400
+        # Fall back to curated sandbox demo mode when credentials are missing
+        return jsonify({"status": "ok", "cached": False, "is_demo": True, "data": get_mock_triage_data()})
 
     ignore_bots = os.getenv("TRIAGE_IGNORE_BOTS", "true").lower() != "false"
     ignore_repos = set(filter(None, os.getenv("TRIAGE_IGNORE_REPOS", "").split(",")))
@@ -85,7 +91,7 @@ def get_triage():
             min_age_hours=min_age_hours,
         )
         _CACHE[cache_key] = (now, data)
-        return jsonify({"status": "ok", "cached": False, "data": data})
+        return jsonify({"status": "ok", "cached": False, "is_demo": False, "data": data})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -102,6 +108,11 @@ def fork_repo():
     repo = payload.get("repo", "").strip()
     if not repo or "/" not in repo:
         return jsonify({"status": "error", "error": "Invalid repo specified. Expected 'owner/repo'."}), 400
+
+    token = os.getenv("GITHUB_TOKEN")
+    if not token or payload.get("demo"):
+        _CACHE.clear()
+        return jsonify({"status": "ok", "message": f"Demo mode: Simulated fork created for {repo}"})
 
     success, msg = GitHubClient.fork_repo(repo)
     if success:

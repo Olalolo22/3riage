@@ -31,6 +31,9 @@
   const filterTabs = document.querySelectorAll('.filter-tab');
   const mainContent = document.getElementById('main-content');
   const btnBackToList = document.getElementById('btn-back-to-list');
+  const demoBanner = document.getElementById('demo-banner');
+  const btnBannerConnect = document.getElementById('btn-banner-connect');
+  let isDemoMode = false;
 
   // -------------------------------------------------------------------------
   // Lifecycle & Fetching
@@ -41,7 +44,11 @@
     renderSkeletons();
 
     try {
-      const url = forceRefresh ? '/api/refresh' : '/api/triage';
+      const isForcedDemo = new URLSearchParams(window.location.search).get('demo') === 'true' ||
+                           new URLSearchParams(window.location.search).get('demo') === '1';
+      const url = forceRefresh
+        ? `/api/refresh${isForcedDemo ? '?demo=true' : ''}`
+        : `/api/triage${isForcedDemo ? '?demo=true' : ''}`;
       const method = forceRefresh ? 'POST' : 'GET';
       const res = await fetch(url, { method });
       const json = await res.json();
@@ -51,6 +58,7 @@
       }
 
       triageData = json.data;
+      isDemoMode = !!json.is_demo;
       updateHeader();
       renderFeed();
 
@@ -84,7 +92,16 @@
   function updateHeader() {
     if (!triageData) return;
     connectionStatus.classList.remove('offline');
-    statusUser.textContent = `@${triageData.username}`;
+
+    if (demoBanner) {
+      demoBanner.style.display = isDemoMode ? 'flex' : 'none';
+    }
+
+    if (isDemoMode) {
+      statusUser.textContent = `@${triageData.username} (sample)`;
+    } else {
+      statusUser.textContent = `@${triageData.username}`;
+    }
 
     const s = triageData.summary;
     const totalActive = s.needs_you + s.waiting_on_them + s.unlinked_issues + s.ready_to_claim;
@@ -649,6 +666,12 @@
   if (btnBackToList) {
     btnBackToList.addEventListener('click', () => {
       if (mainContent) mainContent.classList.remove('viewing-detail');
+    });
+  }
+
+  if (btnBannerConnect) {
+    btnBannerConnect.addEventListener('click', () => {
+      showToast('Client PAT modal arriving in Phase 4. Use Deploy your own to self-host today!');
     });
   }
 
