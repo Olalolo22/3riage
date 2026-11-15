@@ -688,7 +688,7 @@
   // Helpers & Toast
   // -------------------------------------------------------------------------
 
-  function showToast(msg) {
+  function showToast(msg, durationMs = 3000) {
     const existing = document.querySelector('.toast');
     if (existing) existing.remove();
 
@@ -697,7 +697,7 @@
     toast.textContent = msg;
     document.body.appendChild(toast);
 
-    setTimeout(() => toast.remove(), 3000);
+    setTimeout(() => toast.remove(), durationMs);
   }
 
   function escapeHtml(str) {

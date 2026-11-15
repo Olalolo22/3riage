@@ -462,19 +462,28 @@ def auth_callback():
     try:
         redirect_uri = build_redirect_uri(request)
         token_data = exchange_code_for_token(code, redirect_uri)
-        login = GitHubClient(token=token_data["access_token"]).get_viewer_login()
-        session_data = {
-            **token_data,
-            "username": login,
-        }
-        resp = make_response(redirect("/"))
-        set_session_cookie(resp, request, session_data)
-        clear_state_cookie(resp, request)
-        return resp
     except Exception:
-        resp = make_response(redirect("/?auth_error=oauth_failed"))
+        app.logger.exception("GitHub OAuth token exchange failed")
+        resp = make_response(redirect("/?auth_error=token_exchange_failed"))
         clear_state_cookie(resp, request)
         return resp
+
+    try:
+        login = GitHubClient(token=token_data["access_token"]).get_viewer_login()
+    except Exception:
+        app.logger.exception("GitHub viewer login lookup failed after OAuth token exchange")
+        resp = make_response(redirect("/?auth_error=viewer_lookup_failed"))
+        clear_state_cookie(resp, request)
+        return resp
+
+    session_data = {
+        **token_data,
+        "username": login,
+    }
+    resp = make_response(redirect("/"))
+    set_session_cookie(resp, request, session_data)
+    clear_state_cookie(resp, request)
+    return resp
 
 
 @app.route("/api/auth/logout", methods=["GET", "POST"])
