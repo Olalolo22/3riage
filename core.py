@@ -9,6 +9,7 @@ CLI and dashboard are thin layers on top of this.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -552,21 +553,28 @@ def run_triage(
             return False
         return True
 
-    # Fetch all data
-    open_prs = [
-        pr for pr in client.get_open_prs(include_drafts=include_drafts)
-        if _repo_allowed(pr["repository"]["nameWithOwner"])
-    ]
-    merged_prs = [
-        pr for pr in client.get_merged_prs(limit=20)
-        if _repo_allowed(pr["repository"]["nameWithOwner"])
-    ]
-    involved_issues = [
-        i for i in client.get_involved_issues()
-        if _repo_allowed(i["repository"]["nameWithOwner"])
-    ]
-    forked_parents = client.get_forked_parents()
-    write_access_repos = client.get_write_access_repos()
+    # Fetch all data concurrently to minimize latency on serverless hosts
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_open = pool.submit(client.get_open_prs, include_drafts=include_drafts)
+        f_merged = pool.submit(client.get_merged_prs, limit=20)
+        f_issues = pool.submit(client.get_involved_issues)
+        f_forks = pool.submit(client.get_forked_parents)
+        f_write = pool.submit(client.get_write_access_repos)
+
+        open_prs = [
+            pr for pr in f_open.result()
+            if _repo_allowed(pr["repository"]["nameWithOwner"])
+        ]
+        merged_prs = [
+            pr for pr in f_merged.result()
+            if _repo_allowed(pr["repository"]["nameWithOwner"])
+        ]
+        involved_issues = [
+            i for i in f_issues.result()
+            if _repo_allowed(i["repository"]["nameWithOwner"])
+        ]
+        forked_parents = f_forks.result()
+        write_access_repos = f_write.result()
 
     # Compute
     linked = _build_linked_set(open_prs, client)

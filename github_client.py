@@ -12,6 +12,7 @@ Rate limit budget:
 import os
 import re
 import subprocess
+import threading
 import requests
 from typing import Any
 
@@ -54,6 +55,8 @@ class GitHubClient:
     def __init__(self, token: str, username: str = "", ignore_bots: bool = True):
         self.username = username
         self.ignore_bots = ignore_bots
+        self._init_thread_id = threading.get_ident()
+        self._thread_local = threading.local()
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -63,13 +66,23 @@ class GitHubClient:
             }
         )
 
+    def _get_session(self) -> requests.Session:
+        if threading.get_ident() == self._init_thread_id or type(self.session) is not requests.Session:
+            return self.session
+        sess = getattr(self._thread_local, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            sess.headers.update(self.session.headers)
+            self._thread_local.session = sess
+        return sess
+
     # ------------------------------------------------------------------
     # Low-level
     # ------------------------------------------------------------------
 
     def _gql(self, query: str, variables: dict) -> dict:
-        resp = self.session.post(
-            GRAPHQL_URL, json={"query": query, "variables": variables}, timeout=30
+        resp = self._get_session().post(
+            GRAPHQL_URL, json={"query": query, "variables": variables}, timeout=(5, 12)
         )
         resp.raise_for_status()
         body = resp.json()

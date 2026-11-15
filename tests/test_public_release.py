@@ -414,6 +414,24 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         self.assertEqual(data["summary"]["ready_to_claim"], 1)
         self.assertEqual(data["claims"][0]["repo"], "ext-org/ext-repo")
 
+    def test_github_client_thread_local_sessions(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        client = GitHubClient(token="ghu_test_token", username="octocat")
+        main_sess = client._get_session()
+        self.assertIs(main_sess, client.session)
+
+        def worker(_):
+            s = client._get_session()
+            return id(s), s.headers.get("Authorization")
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(worker, range(8)))
+
+        for sess_id, auth_hdr in results:
+            self.assertNotEqual(sess_id, id(main_sess))
+            self.assertEqual(auth_hdr, "Bearer ghu_test_token")
+
 
 if __name__ == "__main__":
     unittest.main()

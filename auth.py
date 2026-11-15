@@ -226,7 +226,7 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> dict[str, Any]:
             "code": code,
             "redirect_uri": redirect_uri,
         },
-        timeout=20,
+        timeout=(5, 10),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -252,7 +252,7 @@ def refresh_access_token(refresh_token: str) -> dict[str, Any]:
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
         },
-        timeout=20,
+        timeout=(5, 10),
     )
     resp.raise_for_status()
     data = resp.json()

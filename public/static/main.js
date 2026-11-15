@@ -60,11 +60,13 @@
 
     const messages = {
       access_denied: 'GitHub sign-in was cancelled.',
-      invalid_state: 'Sign-in state expired or did not match. Please try again.',
+      invalid_state: 'Sign-in state cookie expired or did not match. Please try again.',
+      token_exchange_failed: 'GitHub OAuth token exchange failed — check Client ID, Client Secret, and Callback URL.',
+      viewer_lookup_failed: 'Signed in, but could not fetch your GitHub username.',
       oauth_failed: 'Could not complete GitHub sign-in. Please try again.',
       oauth_not_configured: 'GitHub OAuth is not configured on this host yet.',
     };
-    showToast(messages[err] || `GitHub auth notice: ${err}`);
+    showToast(messages[err] || `GitHub auth notice: ${err}`, 9000);
 
     params.delete('auth_error');
     const nextQs = params.toString();
@@ -72,50 +74,94 @@
     window.history.replaceState({}, '', nextUrl);
   }
 
-  async function loadTriage(forceRefresh = false) {
+  let activeFetchController = null;
+
+  async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 20000) {
+    const controller = new AbortController();
+    activeFetchController = controller;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      const text = await res.text();
+      let json = null;
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch (_) {
+          json = null;
+        }
+      }
+      return { res, json, rawText: text };
+    } finally {
+      clearTimeout(timer);
+      if (activeFetchController === controller) {
+        activeFetchController = null;
+      }
+    }
+  }
+
+  async function loadTriage(forceRefresh = false, forceDemo = false) {
+    if (activeFetchController) {
+      activeFetchController.abort();
+      activeFetchController = null;
+    }
     const requestGen = ++loadGeneration;
     btnRefresh.classList.add('spinning');
     renderSkeletons();
 
     try {
       const params = new URLSearchParams(window.location.search);
-      const isForcedDemo = params.get('demo') === 'true' || params.get('demo') === '1';
+      const isForcedDemo = forceDemo || params.get('demo') === 'true' || params.get('demo') === '1';
       const url = forceRefresh
         ? `/api/refresh${isForcedDemo ? '?demo=true' : ''}`
         : `/api/triage${isForcedDemo ? '?demo=true' : ''}`;
       const method = forceRefresh ? 'POST' : 'GET';
-      const res = await fetch(url, { method });
-      const json = await res.json();
+      const { res, json } = await fetchJsonWithTimeout(url, { method }, 20000);
       if (requestGen !== loadGeneration) return;
 
       if (res.status === 401) {
-        showToast(json.error || 'GitHub session expired. Showing demo mode.');
-        const fallbackRes = await fetch('/api/triage?demo=true');
-        const fallbackJson = await fallbackRes.json();
+        showToast((json && json.error) || 'GitHub session expired. Showing demo mode.', 6000);
+        const fallback = await fetchJsonWithTimeout('/api/triage?demo=true', {}, 15000);
         if (requestGen !== loadGeneration) return;
-        if (fallbackJson.status === 'ok') {
-          applyTriageResponse(fallbackJson);
+        if (fallback.json && fallback.json.status === 'ok') {
+          applyTriageResponse(fallback.json);
           return;
         }
       }
 
-      if (json.status !== 'ok') {
-        throw new Error(json.error || 'Failed to fetch triage data');
+      if (!res.ok) {
+        throw new Error((json && json.error) || `Server returned HTTP ${res.status}. Please retry.`);
+      }
+
+      if (!json || json.status !== 'ok') {
+        throw new Error((json && json.error) || 'Failed to fetch triage data');
       }
 
       applyTriageResponse(json);
     } catch (err) {
       if (requestGen !== loadGeneration) return;
+      const isTimeout = err && err.name === 'AbortError';
+      const message = isTimeout
+        ? 'Request timed out after 20s waiting on GitHub.'
+        : (err && err.message ? err.message : 'Failed to load triage data');
       console.error(err);
       connectionStatus.classList.add('offline');
-      statusUser.textContent = 'Error connecting';
+      statusUser.textContent = isTimeout ? 'Timed out' : 'Error connecting';
       listContainer.innerHTML = `
         <div style="padding: 24px 16px; color: var(--color-red); font-size: 12px; line-height: 1.6;">
-          <strong>Error loading triage:</strong><br>${escapeHtml(err.message)}
+          <strong>Error loading triage:</strong><br>${escapeHtml(message)}
           <br><br>
-          <span style="color: var(--text-muted);">Try refreshing or reconnecting your GitHub account.</span>
+          <span style="color: var(--text-muted);">Try refreshing, or load sample demo data while checking your connection.</span>
+          <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-secondary" id="btn-retry-load">Retry</button>
+            <button type="button" class="btn btn-secondary" id="btn-load-demo">Open Demo Mode</button>
+          </div>
         </div>
       `;
+      const retryBtn = document.getElementById('btn-retry-load');
+      if (retryBtn) retryBtn.addEventListener('click', () => loadTriage(false, false));
+      const demoBtn = document.getElementById('btn-load-demo');
+      if (demoBtn) demoBtn.addEventListener('click', () => loadTriage(false, true));
     } finally {
       if (requestGen === loadGeneration) {
         btnRefresh.classList.remove('spinning');
