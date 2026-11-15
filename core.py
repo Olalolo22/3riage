@@ -533,15 +533,19 @@ def run_triage(
     only_repos: set[str] | None = None,
     claims_days: int = 14,
     min_age_hours: float = 0,
+    external_only: bool = False,
 ) -> dict:
     """
     Run a full triage and return a structured JSON-serialisable dict.
     """
     ignore_repos = {r.lower() for r in (ignore_repos or set())}
     only_repos = {r.lower() for r in (only_repos or set())}
+    me_lo = (client.username or "").lower()
 
     def _repo_allowed(repo: str) -> bool:
         r = repo.lower()
+        if external_only and me_lo and r.split("/", 1)[0] == me_lo:
+            return False
         if ignore_repos and r in ignore_repos:
             return False
         if only_repos and r not in only_repos:
@@ -553,7 +557,10 @@ def run_triage(
         pr for pr in client.get_open_prs(include_drafts=include_drafts)
         if _repo_allowed(pr["repository"]["nameWithOwner"])
     ]
-    merged_prs = client.get_merged_prs(limit=20)
+    merged_prs = [
+        pr for pr in client.get_merged_prs(limit=20)
+        if _repo_allowed(pr["repository"]["nameWithOwner"])
+    ]
     involved_issues = [
         i for i in client.get_involved_issues()
         if _repo_allowed(i["repository"]["nameWithOwner"])

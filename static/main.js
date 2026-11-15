@@ -17,6 +17,10 @@
   let canForkViaCli = false;
   let loadGeneration = 0;
   let lastModalTrigger = null;
+  let externalOnly = false;
+  try {
+    externalOnly = localStorage.getItem('3riage-external-only') === 'true';
+  } catch (e) {}
 
   // DOM Elements
   const statusUser = document.getElementById('status-user');
@@ -33,6 +37,7 @@
   const listContainer = document.getElementById('list-container');
   const listTitle = document.getElementById('list-title');
   const listCounter = document.getElementById('list-counter');
+  const btnExternalOnly = document.getElementById('btn-external-only');
   const emptyDetail = document.getElementById('empty-detail');
   const detailContent = document.getElementById('detail-content');
   const filterTabs = document.querySelectorAll('.filter-tab');
@@ -886,6 +891,29 @@
     connectModal.addEventListener('click', e => {
       if (e.target === connectModal) {
         closeConnectModal();
+      }
+    });
+  }
+
+  if (btnExternalOnly) {
+    updateExternalToggleUI();
+    btnExternalOnly.addEventListener('click', () => {
+      externalOnly = !externalOnly;
+      try {
+        localStorage.setItem('3riage-external-only', String(externalOnly));
+      } catch (e) {}
+      updateExternalToggleUI();
+      if (!triageData) return;
+      updateHeader();
+      renderFeed();
+      if (flatItemsList.length > 0) {
+        const match = selectedItem
+          ? flatItemsList.find(i => getItemId(i) === getItemId(selectedItem))
+          : null;
+        selectItem(match || flatItemsList[0]);
+      } else {
+        selectedItem = null;
+        renderDetail(null);
       }
     });
   }

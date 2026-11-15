@@ -304,8 +304,9 @@ def _resolve_cli_auth(ignore_bots: bool = True) -> tuple[GitHubClient, str]:
 @click.option("--min-age-hours", default=None, type=float, help="Ignore activity younger than N hours (overrides TRIAGE_MIN_AGE_HOURS).")
 @click.option("--forks", "run_forks", is_flag=True, help="Run interactive fork assistant after report.")
 @click.option("--claims-days", default=14, show_default=True, help="How many days back to look for merged PRs.")
+@click.option("--external-only", is_flag=True, help="Exclude PRs and issues in repositories you own.")
 @click.pass_context
-def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days):
+def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days, external_only):
     """
     3riage — GitHub contribution triage tool.
 
@@ -356,6 +357,7 @@ def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, 
             only_repos=only_repos,
             claims_days=claims_days,
             min_age_hours=final_min_age,
+            external_only=external_only,
         )
     except Exception as e:
         click.echo(_c(f"\nError fetching data: {e}", RED), err=True)

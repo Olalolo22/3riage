@@ -80,7 +80,10 @@
       <section class="pane-list" id="pane-list">
         <div class="list-header">
           <span class="list-title" id="list-title">All Items</span>
-          <span class="list-counter" id="list-counter">0 items</span>
+          <div class="list-header-right">
+            <button type="button" class="btn-external-toggle" id="btn-external-only" aria-pressed="false" title="Hide PRs and issues in repositories you own">External only</button>
+            <span class="list-counter" id="list-counter">0 items</span>
+          </div>
         </div>
         <div class="list-scroll" id="list-container">
           <!-- Skeletons rendered by JS -->

@@ -342,6 +342,7 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         pub_html = (ROOT_DIR / "public" / "index.html").read_text(encoding="utf-8")
         self.assertEqual(root_html, tpl_html)
         self.assertEqual(root_html, pub_html)
+        self.assertIn("btn-external-only", root_html)
 
         main_js = (ROOT_DIR / "static" / "main.js").read_text(encoding="utf-8")
         pub_js = (ROOT_DIR / "public" / "static" / "main.js").read_text(encoding="utf-8")
@@ -351,6 +352,67 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         style_css = (ROOT_DIR / "static" / "style.css").read_text(encoding="utf-8")
         pub_css = (ROOT_DIR / "public" / "static" / "style.css").read_text(encoding="utf-8")
         self.assertEqual(style_css, pub_css)
+
+    def test_run_triage_external_only_excludes_self_owned_repos(self):
+        from datetime import datetime, timezone
+        from core import run_triage
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        fake_client = MagicMock()
+        fake_client.username = "Olalolo22"
+        fake_client.get_open_prs.return_value = [
+            {
+                "number": 10,
+                "title": "Own repo PR",
+                "url": "https://github.com/Olalolo22/3riage/pull/10",
+                "isDraft": False,
+                "repository": {"nameWithOwner": "olalolo22/3riage"},
+                "body": "",
+                "closingIssuesReferences": {"nodes": []},
+                "reviews": {"nodes": []},
+                "reviewThreads": {"nodes": []},
+                "comments": {"nodes": []},
+                "commits": {"nodes": [{"commit": {"committedDate": now_iso}}]},
+            },
+            {
+                "number": 20,
+                "title": "External PR",
+                "url": "https://github.com/ext-org/ext-repo/pull/20",
+                "isDraft": False,
+                "repository": {"nameWithOwner": "ext-org/ext-repo"},
+                "body": "",
+                "closingIssuesReferences": {"nodes": []},
+                "reviews": {"nodes": []},
+                "reviewThreads": {"nodes": []},
+                "comments": {"nodes": []},
+                "commits": {"nodes": [{"commit": {"committedDate": now_iso}}]},
+            },
+        ]
+        fake_client.get_merged_prs.return_value = [
+            {
+                "number": 1,
+                "title": "Own merged PR",
+                "url": "https://github.com/Olalolo22/3riage/pull/1",
+                "mergedAt": now_iso,
+                "repository": {"nameWithOwner": "Olalolo22/3riage"},
+            },
+            {
+                "number": 2,
+                "title": "External merged PR",
+                "url": "https://github.com/ext-org/ext-repo/pull/2",
+                "mergedAt": now_iso,
+                "repository": {"nameWithOwner": "ext-org/ext-repo"},
+            },
+        ]
+        fake_client.get_involved_issues.return_value = []
+        fake_client.get_forked_parents.return_value = set()
+        fake_client.get_write_access_repos.return_value = set()
+
+        data = run_triage(fake_client, external_only=True)
+        self.assertEqual(data["summary"]["waiting_on_them"], 1)
+        self.assertEqual(data["prs"]["WAITING_ON_THEM"][0]["repo"], "ext-org/ext-repo")
+        self.assertEqual(data["summary"]["ready_to_claim"], 1)
+        self.assertEqual(data["claims"][0]["repo"], "ext-org/ext-repo")
 
 
 if __name__ == "__main__":
