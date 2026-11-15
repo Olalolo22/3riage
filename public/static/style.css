@@ -1093,12 +1093,36 @@ kbd {
 
   .top-bar-left {
     grid-area: brand;
-    gap: 10px;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .brand-tag {
+    display: none;
+  }
+
+  .connection-status {
+    padding-left: 8px;
+    min-width: 0;
+  }
+
+  .status-user {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .top-bar-actions {
     grid-area: actions;
     gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .btn-logout,
+  .btn-refresh,
+  .btn-theme-toggle {
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .demo-banner {
@@ -1115,7 +1139,10 @@ kbd {
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
     padding-bottom: 2px;
-    gap: 6px;
+    padding-right: 18px;
+    gap: 5px;
+    -webkit-mask-image: linear-gradient(to right, #000 90%, transparent 100%);
+    mask-image: linear-gradient(to right, #000 90%, transparent 100%);
   }
 
   .view-filters::-webkit-scrollbar {
@@ -1124,8 +1151,9 @@ kbd {
 
   .filter-tab {
     flex-shrink: 0;
-    padding: 6px 10px;
-    font-size: 11.5px;
+    padding: 5px 8px;
+    font-size: 11px;
+    gap: 4px;
   }
 
   .search-box {
@@ -1136,11 +1164,15 @@ kbd {
 
   .search-box input {
     width: 100%;
-    padding-right: 28px;
+    padding-right: 12px;
   }
 
   .search-box input:focus {
     width: 100%;
+  }
+
+  .search-shortcut {
+    display: none;
   }
 
   /* Single Pane Stack on Mobile */

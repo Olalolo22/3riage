@@ -144,6 +144,32 @@
     }
   }
 
+  function isOwnRepoItem(item) {
+    if (!triageData || !triageData.username || !item || !item.repo) return false;
+    const owner = item.repo.split('/')[0].toLowerCase();
+    return owner === triageData.username.toLowerCase();
+  }
+
+  function getScopedCollections() {
+    if (!triageData) {
+      return { prsNeedsYou: [], prsWaiting: [], prsFine: [], issues: [], claims: [] };
+    }
+    const filterFn = item => !externalOnly || !isOwnRepoItem(item);
+    return {
+      prsNeedsYou: (triageData.prs.NEEDS_YOU || []).filter(filterFn).map(p => ({ ...p, category: 'needs_you' })),
+      prsWaiting: (triageData.prs.WAITING_ON_THEM || []).filter(filterFn).map(p => ({ ...p, category: 'waiting' })),
+      prsFine: (triageData.prs.PROBABLY_FINE || []).filter(filterFn).map(p => ({ ...p, category: 'probably_fine' })),
+      issues: (triageData.unlinked_issues || []).filter(filterFn).map(i => ({ ...i, category: 'issues' })),
+      claims: (triageData.claims || []).filter(filterFn).map(c => ({ ...c, category: 'claims' })),
+    };
+  }
+
+  function updateExternalToggleUI() {
+    if (!btnExternalOnly) return;
+    btnExternalOnly.classList.toggle('active', externalOnly);
+    btnExternalOnly.setAttribute('aria-pressed', externalOnly ? 'true' : 'false');
+  }
+
   function updateHeader() {
     if (!triageData) return;
     connectionStatus.classList.remove('offline');
@@ -162,13 +188,18 @@
       statusUser.textContent = `@${triageData.username}`;
     }
 
-    const s = triageData.summary;
-    const totalActive = s.needs_you + s.waiting_on_them + s.unlinked_issues + s.ready_to_claim;
+    const scoped = getScopedCollections();
+    const totalActive =
+      scoped.prsNeedsYou.length +
+      scoped.prsWaiting.length +
+      scoped.prsFine.length +
+      scoped.issues.length +
+      scoped.claims.length;
     countAll.textContent = totalActive;
-    countNeedsYou.textContent = s.needs_you;
-    countWaiting.textContent = s.waiting_on_them;
-    countIssues.textContent = s.unlinked_issues;
-    countClaims.textContent = s.ready_to_claim;
+    countNeedsYou.textContent = scoped.prsNeedsYou.length;
+    countWaiting.textContent = scoped.prsWaiting.length + scoped.prsFine.length;
+    countIssues.textContent = scoped.issues.length;
+    countClaims.textContent = scoped.claims.length;
   }
 
   function renderSkeletons() {
@@ -192,15 +223,11 @@
     if (!triageData) return [];
 
     let items = [];
-
-    const prsNeedsYou = (triageData.prs.NEEDS_YOU || []).map(p => ({ ...p, category: 'needs_you' }));
-    const prsWaiting = (triageData.prs.WAITING_ON_THEM || []).map(p => ({ ...p, category: 'waiting' }));
-    const prsFine = (triageData.prs.PROBABLY_FINE || []).map(p => ({ ...p, category: 'probably_fine' }));
-    const issues = (triageData.unlinked_issues || []).map(i => ({ ...i, category: 'issues' }));
-    const claims = (triageData.claims || []).map(c => ({ ...c, category: 'claims' }));
+    const scoped = getScopedCollections();
+    const { prsNeedsYou, prsWaiting, prsFine, issues, claims } = scoped;
 
     if (activeFilter === 'all') {
-      items = [...prsNeedsYou, ...prsWaiting, ...prsFine, ...issues, ...claims];
+      items = [...prsNeedsYou, ...claims, ...prsWaiting, ...prsFine, ...issues];
     } else if (activeFilter === 'needs_you') {
       items = prsNeedsYou;
     } else if (activeFilter === 'waiting') {
