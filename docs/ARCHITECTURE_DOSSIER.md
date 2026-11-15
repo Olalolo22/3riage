@@ -2,10 +2,10 @@
 
 **Dossier Generation Date:** November 10, 2026  
 **Investigator:** Antigravity Engineering Portfolio Intelligence Analyst  
-**Repository Source:** Remote GitHub (`Olalolo22/3riage`) / Local Workspace (`/home/lala_02/3riage`)  
+**Repository Source:** Remote GitHub (`Olalolo22/3riage`)  
 **Access Level:** Public / Open Source  
 **Latest Verified Commit:** `58b3d66` (`feat(sandbox): add curated mock dataset and sandbox demo mode (Phase 1)`)  
-**Evidence Standard:** E2 (Complete Python Codebase, CLI Interface, Curated Sandbox Engine)
+**Evidence Standard:** E2 (Complete Python Codebase, CLI Interface, Web Dashboard, Curated Sandbox Engine)
 
 ---
 
@@ -14,7 +14,7 @@
 - **Project Name:** 3riage
 - **Repository URL:** [`https://github.com/Olalolo22/3riage`](https://github.com/Olalolo22/3riage)
 - **Relevant Branches:** `4public`, `main`
-- **What It Does:** A contributor-first triage engine and command-line workstation for high-velocity open-source contributors and bounty hunters. Surfaces relational GitHub state that native GitHub notifications conceal: PRs where the ball is in your court, issues applied to with no open PR, unforked assigned repositories, and recently merged PRs ready to claim for rewards.
+- **What It Does:** A contributor-first triage engine, CLI workstation, and multi-user web dashboard for high-velocity open-source contributors and bounty hunters. Surfaces relational GitHub state that native GitHub notifications conceal: PRs where the ball is in your court, issues applied to with no open PR, unforked assigned repositories, and recently merged PRs ready to claim for rewards.
 - **Specific Problem Addressed:** High-velocity open-source builders juggling 10+ active repositories miss critical deadlines because GitHub's notification inbox is flat and un-relational. A `Changes Requested` badge stays forever even after a contributor pushes fixes; single approvals mask blocking reviews from other maintainers; and merged PRs drift out of memory before bounties are claimed.
 - **Target Audience:** Open-source maintainers, bounty hunters, developer fellows, protocol contributors.
 
@@ -22,7 +22,7 @@
 
 ## B. Implementation Status
 
-- **Classification:** **Fully Implemented CLI Workstation with Curated Sandbox Mode**
+- **Classification:** **Fully Implemented CLI Workstation & Multi-User Web Dashboard with Curated Sandbox Mode**
 - **Verified Components:**
   - [x] **Relational Contributor Analyzer:** Crosses `involves:@me` search queries against open PRs, identifying issues where the user applied but hasn't submitted code.
   - [x] **"Ball-in-Your-Court" Timestamp Diffing:** Compares the timestamp of the author's latest commit against each reviewer's review timestamp to determine whether the maintainer or the author owes the next move.
@@ -61,7 +61,7 @@
 +--------------------------------------------------------------------------------+
                 │
                 ▼
-[ Rich Terminal Dashboard (Terminal UI / Markdown Output) ]
+[ Rich Terminal Dashboard (CLI) / Multi-User Flask + Vercel Web UI ]
 ```
 
 ---
@@ -70,8 +70,8 @@
 
 | Claim ID | Claim Description | Evidence Source | Confidence |
 | :--- | :--- | :--- | :---: |
-| `CLM-3RIAGE-001` | Built contributor triage engine in Python diffing commit vs review timestamps to detect true turnaround bottlenecks. | `triage.py`, commit `58b3d66` | **E2** |
-| `CLM-3RIAGE-002` | Implemented multi-reviewer deadlock resolution and 14-day merged PR bounty claim shelf. | `README.md`, `triage/analyzer.py` | **E2** |
+| `CLM-3RIAGE-001` | Built contributor triage engine in Python diffing commit vs review timestamps to detect true turnaround bottlenecks. | `triage.py`, `core.py` | **E2** |
+| `CLM-3RIAGE-002` | Implemented multi-reviewer deadlock resolution and 14-day merged PR bounty claim shelf. | `README.md`, `core.py` | **E2** |
 
 ---
 

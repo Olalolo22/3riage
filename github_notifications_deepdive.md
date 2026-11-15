@@ -77,7 +77,7 @@ reason:author
 
 # Filter by state
 is:unread
-is:open
+is:read
 is:done
 is:saved
 
@@ -87,7 +87,7 @@ repo:org-name/*
 ```
 
 > [!TIP]
-> You can create **Custom Filters** on the left sidebar: click **Manage notifications > Filters** to save custom views like `is:open reason:author` for quick access.
+> You can create **Custom Filters** on the left sidebar: click **Manage notifications > Filters** to save supported inbox views like `reason:author` or `reason:review-requested` (use Global GitHub Search in Section 3 for `is:open` issue/PR queries).
 
 ---
 
@@ -157,14 +157,15 @@ sequenceDiagram
     participant Discord as Drips Discord
     participant Payout as Points / Drips Rewards
 
-    Dev->>GH: 1. Apply to issue ('Can I take this?')
-    Dev->>GH: 2. Submit PR and get merged
-    Dev->>Discord: 3. Open ticket / post link in Discord
-    Discord->>Payout: 4. Maintainer verifies and assigns points
+    Dev->>Payout: 1. Apply to Wave issue in the Drips Wave app
+    Payout->>Dev: 2. Maintainer assigns the issue on GitHub
+    Dev->>GH: 3. Submit a PR that closes the issue
+    GH->>Payout: 4. Issue closes as completed; points awarded
+    Dev->>Discord: 5. Open a Discord ticket only if points are missing
 ```
 </details>
 
-GitHub has **no native awareness** of Discord, reward tiers, Drips streams, or points. If you rely solely on GitHub notifications, steps 3 and 4 will inevitably fall through the cracks.
+GitHub has **no native awareness** of Discord, reward tiers, Drips streams, or points. If you rely solely on GitHub notifications, steps 1, 4, and 5 will inevitably fall through the cracks.
 
 ---
 
@@ -182,8 +183,8 @@ GitHub allows you to create personal project boards that span **any repository a
 #### Option B: GitHub CLI (`gh`) Automation
 If you prefer a terminal workflow, run quick scripts to inspect your contributions:
 ```bash
-# List your 10 most recent merged PRs
-gh search prs --author "@me" --state merged --limit 10
+# List your 10 most recently updated merged PRs
+gh search prs --author "@me" --merged --sort updated --order desc --limit 10
 
 # List issues you commented on in a specific org
 gh search issues --commenter "@me" --owner "drips" --state open
@@ -229,4 +230,4 @@ mindmap
 | **PR Follow-ups** | Direct review comments, mentions, CI failure pings. | Reminding you to check back in 3 days if maintainers are unresponsive. | Use GitHub personal project board or third-party reminder bot. |
 | **Discord / Drips Point Systems** | Zero native support for Discord or external rewards. | Cannot attach external status (points, bounties, Discord tickets) to PRs. | Personal GitHub Projects with custom fields for Discord ticket links and Points. |
 | **Notification Snoozing** | "Save for later" (`s`) bucket. | Cannot snooze until a specific date/time (e.g., "remind me next Monday"). | Use third-party tools (Octobox, Linear Sync) or calendar tasks. |
-| **Bot & CI Noise** | Filters like `-reason:ci-activity`. | Many bots comment as normal users, polluting notifications. | Add custom search filter: `-author:app/dependabot -author:app/stale`. |
+| **Bot & CI Noise** | Positive reason filters like `reason:review-requested` or `reason:mention`. | Inbox filters do not support negative exclusions (`-`), and bots commenting on human-authored threads still trigger inbox updates. | Use positive inbox filters (`reason:review-requested reason:mention reason:assign`) or run 3riage with `TRIAGE_IGNORE_BOTS=true`. |

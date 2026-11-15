@@ -920,11 +920,12 @@ kbd {
 .modal-card {
   width: 100%;
   max-width: 520px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
-  overflow: hidden;
 }
 
 .modal-header {

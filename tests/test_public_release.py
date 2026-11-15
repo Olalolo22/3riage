@@ -101,6 +101,8 @@ class TestAppOAuthAndMultiUserIsolation(unittest.TestCase):
     def tearDown(self):
         self.env_patch.stop()
         app_module._CACHE.clear()
+        app_module._REFRESH_RESULTS.clear()
+        app_module._REFRESH_TOKEN_LOCKS.clear()
 
     def test_default_falls_back_to_demo_mode(self):
         res = self.client.get("/api/triage")
@@ -212,6 +214,56 @@ class TestAppOAuthAndMultiUserIsolation(unittest.TestCase):
         mock_refresh.assert_called_once_with("refresh_old")
         self.assertIn(auth.SESSION_COOKIE_NAME, res.headers.get("Set-Cookie", ""))
 
+        # Second near-simultaneous request with same pre-refresh cookie deduplicates refresh
+        res2 = self.client.get("/api/triage")
+        self.assertEqual(res2.status_code, 200)
+        mock_refresh.assert_called_once_with("refresh_old")
+
+    @patch("app.refresh_access_token")
+    def test_transient_refresh_failure_returns_503_without_clearing_cookie(self, mock_refresh):
+        mock_refresh.side_effect = requests.Timeout("GitHub timeout")
+
+        expired_cookie = auth.encrypt_cookie_payload(
+            {
+                "access_token": "token_old",
+                "refresh_token": "refresh_transient",
+                "expires_at": int(time.time()) - 10,
+                "username": "alice",
+            }
+        )
+        self.client.set_cookie(auth.SESSION_COOKIE_NAME, expired_cookie)
+        res = self.client.get("/api/triage")
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(res.get_json()["auth_error"], "upstream_unavailable")
+        self.assertNotIn(f"{auth.SESSION_COOKIE_NAME}=;", res.headers.get("Set-Cookie", ""))
+
+    @patch("app.run_triage")
+    @patch("app.refresh_access_token")
+    def test_refreshed_cookie_preserved_when_triage_errors(self, mock_refresh, mock_run_triage):
+        mock_refresh.return_value = {
+            "access_token": "token_new",
+            "refresh_token": "refresh_new",
+            "expires_at": int(time.time()) + 28800,
+        }
+        resp_502 = requests.Response()
+        resp_502.status_code = 502
+        mock_run_triage.side_effect = requests.HTTPError("502 Bad Gateway", response=resp_502)
+
+        expired_cookie = auth.encrypt_cookie_payload(
+            {
+                "access_token": "token_old",
+                "refresh_token": "refresh_keep_on_500",
+                "expires_at": int(time.time()) - 10,
+                "username": "alice",
+            }
+        )
+        self.client.set_cookie(auth.SESSION_COOKIE_NAME, expired_cookie)
+        res = self.client.get("/api/triage")
+        self.assertEqual(res.status_code, 500)
+        set_cookie = res.headers.get("Set-Cookie", "")
+        self.assertIn(auth.SESSION_COOKIE_NAME, set_cookie)
+        self.assertNotIn(f"{auth.SESSION_COOKIE_NAME}=;", set_cookie)
+
     @patch("app.run_triage")
     def test_revoked_oauth_token_returns_401_and_clears_cookie(self, mock_run_triage):
         resp_401 = requests.Response()
@@ -235,6 +287,22 @@ class TestAppOAuthAndMultiUserIsolation(unittest.TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertIn("read-only", res.get_json()["error"].lower())
 
+    @patch("app.refresh_access_token")
+    def test_vercel_fork_rejects_before_refreshing_token(self, mock_refresh):
+        expired_cookie = auth.encrypt_cookie_payload(
+            {
+                "access_token": "token_old",
+                "refresh_token": "refresh_unused",
+                "expires_at": int(time.time()) - 10,
+                "username": "alice",
+            }
+        )
+        self.client.set_cookie(auth.SESSION_COOKIE_NAME, expired_cookie)
+        with patch.dict(os.environ, {"VERCEL": "1"}, clear=False):
+            res = self.client.post("/api/fork", json={"repo": "owner/repo"})
+        self.assertEqual(res.status_code, 403)
+        mock_refresh.assert_not_called()
+
     def test_logout_clears_session_and_returns_to_demo(self):
         cookie = auth.encrypt_cookie_payload({"access_token": "tok_a", "username": "alice", "refresh_token": ""})
         self.client.set_cookie(auth.SESSION_COOKIE_NAME, cookie)
@@ -257,8 +325,8 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         self.assertIn("--no-browser", res_ui.output)
 
     @patch("triage.run_triage")
-    @patch.object(GitHubClient, "get_viewer_login", return_value="auto_user")
-    def test_cli_auto_detects_username_when_only_token_present(self, mock_viewer, mock_run_triage):
+    @patch.object(GitHubClient, "_gql", return_value={"viewer": {"login": "auto_user"}})
+    def test_cli_auto_detects_username_when_only_token_present(self, mock_gql, mock_run_triage):
         mock_run_triage.return_value = _sample_triage("auto_user")
         runner = CliRunner()
         with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_dummy", "GITHUB_USERNAME": ""}, clear=False):
@@ -266,7 +334,7 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         self.assertEqual(res.exit_code, 0, res.output)
         parsed = json.loads(res.output)
         self.assertEqual(parsed["username"], "auto_user")
-        mock_viewer.assert_called_once()
+        mock_gql.assert_called_once()
 
     def test_frontend_copies_are_identical_and_no_inline_copy_onclick(self):
         root_html = (ROOT_DIR / "index.html").read_text(encoding="utf-8")

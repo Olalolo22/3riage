@@ -15,6 +15,8 @@
   let authMode = 'demo';
   let oauthConfigured = false;
   let canForkViaCli = false;
+  let loadGeneration = 0;
+  let lastModalTrigger = null;
 
   // DOM Elements
   const statusUser = document.getElementById('status-user');
@@ -66,6 +68,7 @@
   }
 
   async function loadTriage(forceRefresh = false) {
+    const requestGen = ++loadGeneration;
     btnRefresh.classList.add('spinning');
     renderSkeletons();
 
@@ -78,11 +81,13 @@
       const method = forceRefresh ? 'POST' : 'GET';
       const res = await fetch(url, { method });
       const json = await res.json();
+      if (requestGen !== loadGeneration) return;
 
       if (res.status === 401) {
         showToast(json.error || 'GitHub session expired. Showing demo mode.');
         const fallbackRes = await fetch('/api/triage?demo=true');
         const fallbackJson = await fallbackRes.json();
+        if (requestGen !== loadGeneration) return;
         if (fallbackJson.status === 'ok') {
           applyTriageResponse(fallbackJson);
           return;
@@ -95,6 +100,7 @@
 
       applyTriageResponse(json);
     } catch (err) {
+      if (requestGen !== loadGeneration) return;
       console.error(err);
       connectionStatus.classList.add('offline');
       statusUser.textContent = 'Error connecting';
@@ -106,7 +112,9 @@
         </div>
       `;
     } finally {
-      btnRefresh.classList.remove('spinning');
+      if (requestGen === loadGeneration) {
+        btnRefresh.classList.remove('spinning');
+      }
     }
   }
 
@@ -121,11 +129,10 @@
     renderFeed();
 
     if (flatItemsList.length > 0) {
-      if (!selectedItem || !flatItemsList.find(i => getItemId(i) === getItemId(selectedItem))) {
-        selectItem(flatItemsList[0]);
-      } else {
-        selectItem(selectedItem);
-      }
+      const refreshedMatch = selectedItem
+        ? flatItemsList.find(i => getItemId(i) === getItemId(selectedItem))
+        : null;
+      selectItem(refreshedMatch || flatItemsList[0]);
     } else {
       selectedItem = null;
       renderDetail(null);
@@ -616,22 +623,60 @@
     openConnectModal();
   }
 
+  function getModalFocusableElements() {
+    if (!connectModal) return [];
+    return Array.from(
+      connectModal.querySelectorAll(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter(el => el.offsetParent !== null);
+  }
+
   function openConnectModal() {
-    if (connectModal) {
-      connectModal.classList.remove('hidden');
+    if (!connectModal) return;
+    lastModalTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    connectModal.classList.remove('hidden');
+    const focusables = getModalFocusableElements();
+    if (focusables.length > 0) {
+      focusables[0].focus();
     }
   }
 
   function closeConnectModal() {
-    if (connectModal) {
-      connectModal.classList.add('hidden');
+    if (!connectModal) return;
+    connectModal.classList.add('hidden');
+    if (lastModalTrigger && typeof lastModalTrigger.focus === 'function') {
+      lastModalTrigger.focus();
     }
+    lastModalTrigger = null;
   }
 
   async function handleLogout() {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
+      const res = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!res.ok) {
+        let errMsg = `Sign out failed (${res.status})`;
+        try {
+          const errJson = await res.json();
+          if (errJson && errJson.error) errMsg = errJson.error;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+
+      loadGeneration++;
+      triageData = null;
       selectedItem = null;
+      flatItemsList = [];
+      if (listContainer) listContainer.innerHTML = '';
+      if (listCounter) listCounter.textContent = '0 items';
+      if (detailContent) {
+        detailContent.innerHTML = '';
+        detailContent.classList.add('hidden');
+      }
+      if (emptyDetail) emptyDetail.classList.remove('hidden');
+      if (btnLogout) btnLogout.classList.add('hidden');
+      if (mainContent) mainContent.classList.remove('viewing-detail');
+
       showToast('Signed out of GitHub');
       await loadTriage(false);
     } catch (e) {
@@ -687,8 +732,29 @@
   // -------------------------------------------------------------------------
 
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && connectModal && !connectModal.classList.contains('hidden')) {
-      closeConnectModal();
+    if (connectModal && !connectModal.classList.contains('hidden')) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeConnectModal();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = getModalFocusableElements();
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && (document.activeElement === first || !connectModal.contains(document.activeElement))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && (document.activeElement === last || !connectModal.contains(document.activeElement))) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      }
       return;
     }
 

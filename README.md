@@ -34,6 +34,7 @@ Or run from a local clone:
 git clone https://github.com/Olalolo22/3riage.git
 cd 3riage
 pip install -r requirements.txt
+pip install -e .
 
 # Optional if `gh auth login` is already set up:
 cp .triage.env.example .triage.env

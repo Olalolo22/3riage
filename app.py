@@ -16,8 +16,10 @@ Provides:
   GET|POST /api/auth/logout — Clears encrypted session cookie & caller cache
 """
 
+import hashlib
 import os
 import secrets
+import threading
 import time
 from typing import Any
 from urllib.parse import quote
@@ -73,6 +75,36 @@ _VIEWER_LOGIN_CACHE: dict[str, str] = {}
 CACHE_TTL_SECONDS = 30.0
 MAX_CACHE_ENTRIES = 200
 
+_REFRESH_STATE_LOCK = threading.Lock()
+_REFRESH_TOKEN_LOCKS: dict[str, threading.Lock] = {}
+_REFRESH_RESULTS: dict[str, tuple[float, dict[str, Any]]] = {}
+_REFRESH_DEDUP_TTL_SECONDS = 15.0
+
+
+def _refresh_token_key(refresh_tok: str) -> str:
+    return hashlib.sha256(refresh_tok.encode("utf-8")).hexdigest()[:16]
+
+
+def _refresh_with_single_flight(refresh_tok: str) -> dict[str, Any]:
+    tok_key = _refresh_token_key(refresh_tok)
+    with _REFRESH_STATE_LOCK:
+        tok_lock = _REFRESH_TOKEN_LOCKS.setdefault(tok_key, threading.Lock())
+
+    with tok_lock:
+        now = time.time()
+        with _REFRESH_STATE_LOCK:
+            expired = [k for k, (ts, _) in _REFRESH_RESULTS.items() if now - ts >= _REFRESH_DEDUP_TTL_SECONDS]
+            for k in expired:
+                _REFRESH_RESULTS.pop(k, None)
+            cached = _REFRESH_RESULTS.get(tok_key)
+            if cached is not None:
+                return dict(cached[1])
+
+        new_tokens = refresh_access_token(refresh_tok)
+        with _REFRESH_STATE_LOCK:
+            _REFRESH_RESULTS[tok_key] = (time.time(), dict(new_tokens))
+        return new_tokens
+
 
 def _prune_cache_if_needed() -> None:
     if len(_CACHE) < MAX_CACHE_ENTRIES:
@@ -105,11 +137,12 @@ def _resolve_username(token: str, explicit_username: str | None = None) -> str:
     return login
 
 
-def _resolve_active_auth() -> tuple[str, str | None, str | None, dict[str, Any] | None, str | None]:
+def _resolve_active_auth() -> tuple[str, str | None, str | None, dict[str, Any] | None, tuple[int, str, str, bool] | None]:
     """
     Determine auth mode for the current HTTP request.
-    Returns: (auth_mode, token, username, refreshed_session_data, auth_error)
+    Returns: (auth_mode, token, username, refreshed_session_data, auth_error_info)
       auth_mode in {"demo", "oauth", "env"}
+      auth_error_info is None or (status_code, error_code, message, clear_cookie)
     """
     if os.getenv("TRIAGE_FORCE_DEMO", "").lower() in ("1", "true"):
         return "demo", None, None, None, None
@@ -124,13 +157,50 @@ def _resolve_active_auth() -> tuple[str, str | None, str | None, dict[str, Any] 
         if session_needs_refresh(session_data):
             refresh_tok = session_data.get("refresh_token")
             if not refresh_tok:
-                return "oauth", None, None, None, "GitHub session expired. Please reconnect."
+                return (
+                    "oauth",
+                    None,
+                    None,
+                    None,
+                    (401, "session_expired", "GitHub session expired. Please reconnect.", True),
+                )
             try:
-                new_tokens = refresh_access_token(refresh_tok)
+                new_tokens = _refresh_with_single_flight(refresh_tok)
                 session_data = {**session_data, **new_tokens}
                 refreshed_session = session_data
-            except Exception:
-                return "oauth", None, None, None, "GitHub session expired or revoked. Please reconnect."
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 502
+                if status in (400, 401, 403):
+                    return (
+                        "oauth",
+                        None,
+                        None,
+                        None,
+                        (401, "session_expired", "GitHub session expired or revoked. Please reconnect.", True),
+                    )
+                return (
+                    "oauth",
+                    None,
+                    None,
+                    None,
+                    (503, "upstream_unavailable", "Temporarily unable to reach GitHub to refresh session. Please retry.", False),
+                )
+            except requests.RequestException:
+                return (
+                    "oauth",
+                    None,
+                    None,
+                    None,
+                    (503, "upstream_unavailable", "Temporarily unable to reach GitHub to refresh session. Please retry.", False),
+                )
+            except RuntimeError:
+                return (
+                    "oauth",
+                    None,
+                    None,
+                    None,
+                    (401, "session_expired", "GitHub session expired or revoked. Please reconnect.", True),
+                )
 
         return (
             "oauth",
@@ -146,6 +216,24 @@ def _resolve_active_auth() -> tuple[str, str | None, str | None, dict[str, Any] 
         return "env", env_token, env_username, None, None
 
     return "demo", None, None, None, None
+
+
+def _auth_error_response(auth_error_info: tuple[int, str, str, bool]) -> Any:
+    status_code, error_code, message, should_clear = auth_error_info
+    resp = make_response(
+        jsonify(
+            {
+                "status": "error",
+                "auth_error": error_code,
+                "error": message,
+                "oauth_configured": is_oauth_configured(),
+            }
+        ),
+        status_code,
+    )
+    if should_clear:
+        clear_session_cookie(resp, request)
+    return resp
 
 
 def _build_triage_payload(
@@ -187,22 +275,10 @@ def get_triage():
 
 
 def _execute_triage(force_refresh_override: bool = False):
-    auth_mode, token, username, refreshed_session, auth_error = _resolve_active_auth()
+    auth_mode, token, username, refreshed_session, auth_error_info = _resolve_active_auth()
 
-    if auth_error:
-        resp = make_response(
-            jsonify(
-                {
-                    "status": "error",
-                    "auth_error": "session_expired",
-                    "error": auth_error,
-                    "oauth_configured": is_oauth_configured(),
-                }
-            ),
-            401,
-        )
-        clear_session_cookie(resp, request)
-        return resp
+    if auth_error_info:
+        return _auth_error_response(auth_error_info)
 
     if auth_mode == "demo" or not token:
         return jsonify(
@@ -293,9 +369,11 @@ def _execute_triage(force_refresh_override: bool = False):
             )
             clear_session_cookie(resp, request)
             return resp
-        return jsonify({"status": "error", "error": str(e)}), 500
+        resp = make_response(jsonify({"status": "error", "error": str(e)}), 500)
+        return _attach_refreshed_cookie(resp, refreshed_session)
     except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+        resp = make_response(jsonify({"status": "error", "error": str(e)}), 500)
+        return _attach_refreshed_cookie(resp, refreshed_session)
 
 
 @app.route("/api/refresh", methods=["POST"])
@@ -310,11 +388,14 @@ def fork_repo():
     if not repo or "/" not in repo:
         return jsonify({"status": "error", "error": "Invalid repo specified. Expected 'owner/repo'."}), 400
 
-    auth_mode, token, _, _, _ = _resolve_active_auth()
-    if auth_mode == "demo" or payload.get("demo"):
+    if (
+        payload.get("demo")
+        or request.args.get("demo", "").lower() in ("true", "1")
+        or os.getenv("TRIAGE_FORCE_DEMO", "").lower() in ("1", "true")
+    ):
         return jsonify({"status": "ok", "message": f"Demo mode: Simulated fork created for {repo}"})
 
-    if auth_mode != "env" or is_vercel():
+    if is_vercel():
         return (
             jsonify(
                 {
@@ -324,6 +405,25 @@ def fork_repo():
             ),
             403,
         )
+
+    auth_mode, token, _, refreshed_session, auth_error_info = _resolve_active_auth()
+    if auth_error_info:
+        return _auth_error_response(auth_error_info)
+
+    if auth_mode == "demo":
+        return jsonify({"status": "ok", "message": f"Demo mode: Simulated fork created for {repo}"})
+
+    if auth_mode != "env":
+        resp = make_response(
+            jsonify(
+                {
+                    "status": "error",
+                    "error": "Public web mode is read-only. Use the Fork on GitHub link instead.",
+                }
+            ),
+            403,
+        )
+        return _attach_refreshed_cookie(resp, refreshed_session)
 
     success, msg = GitHubClient.fork_repo(repo)
     if success:

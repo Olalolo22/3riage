@@ -411,6 +411,7 @@ def ui(host: str, port: int, no_browser: bool, demo: bool) -> None:
                 except Exception as e:
                     click.echo(_c(f"Warning: could not resolve GitHub username ({e}); falling back to demo mode.", YELLOW), err=True)
                     os.environ.pop("GITHUB_TOKEN", None)
+                    os.environ["TRIAGE_FORCE_DEMO"] = "1"
             if os.getenv("GITHUB_TOKEN") and os.getenv("GITHUB_USERNAME"):
                 click.echo(_c(f"\n  3riage ui  @{os.environ['GITHUB_USERNAME']}", BOLD + CYAN))
         else:
