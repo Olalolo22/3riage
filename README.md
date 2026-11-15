@@ -20,9 +20,9 @@ If you already have the [`gh` CLI](https://cli.github.com/) logged in (`gh auth 
 
 ```bash
 # Install with pipx or uv
-pipx install git+https://github.com/Olalolo22/3riage.git@4public
+pipx install git+https://github.com/Olalolo22/3riage.git
 # or run ephemerally with uvx
-uvx --from git+https://github.com/Olalolo22/3riage.git@4public 3riage
+uvx --from git+https://github.com/Olalolo22/3riage.git 3riage
 
 # Launch the local web dashboard
 3riage ui
@@ -56,6 +56,7 @@ Use a read-only token. The local fork action uses your local `gh` CLI separately
 3riage --mode forks       # fork status report
 3riage --forks            # interactive fork assistant
 3riage --repo owner/repo  # filter to one repo
+3riage --external-only    # hide PRs, issues, and claims in your own repos
 3riage --json             # raw JSON (pipe-friendly)
 3riage --include-drafts   # include draft PRs
 3riage --min-age-hours 2  # ignore comments younger than 2h
