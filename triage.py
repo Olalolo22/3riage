@@ -3,19 +3,22 @@
 triage.py — CLI for 3riage.
 
 Usage:
-  python triage.py                  # full report
-  python triage.py --mode prs       # PR buckets only
-  python triage.py --mode issues    # unlinked issues only
-  python triage.py --mode claims    # recently merged, ready to claim
-  python triage.py --forks          # fork assistant
-  python triage.py --repo owner/r   # filter to one repo
-  python triage.py --json           # machine-readable JSON output
-  python triage.py --include-drafts # include draft PRs
+  3riage                         # full report (or `python triage.py`)
+  3riage ui                      # launch local web dashboard
+  3riage --mode prs              # PR buckets only
+  3riage --mode issues           # unlinked issues only
+  3riage --mode claims           # recently merged, ready to claim
+  3riage --forks                 # fork assistant
+  3riage --repo owner/r          # filter to one repo
+  3riage --json                  # machine-readable JSON output
+  3riage --include-drafts        # include draft PRs
 """
 
 import json
 import os
 import sys
+import threading
+import webbrowser
 
 import click
 from dotenv import load_dotenv
@@ -247,7 +250,6 @@ def _run_fork_assistant(fork_report: list[dict]) -> None:
     for f in needs_fork:
         repo = f["repo"]
         if click.confirm(f"  Fork {repo}?", default=False):
-            from github_client import GitHubClient
             ok, msg = GitHubClient.fork_repo(repo)
             if ok:
                 click.echo(_c(f"  ✓ {msg}", GREEN))
@@ -272,10 +274,28 @@ def _print_summary(summary: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auth resolution helper
+# ---------------------------------------------------------------------------
+
+def _resolve_cli_auth(ignore_bots: bool = True) -> tuple[GitHubClient, str]:
+    token = (os.getenv("GITHUB_TOKEN") or "").strip() or _gh_auth_token()
+    if not token:
+        raise RuntimeError(
+            "No GitHub token found. Run `gh auth login`, or set GITHUB_TOKEN in .triage.env."
+        )
+
+    username = (os.getenv("GITHUB_USERNAME") or "").strip()
+    client = GitHubClient(token=token, username=username, ignore_bots=ignore_bots)
+    if not username:
+        username = client.get_viewer_login()
+    return client, username
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-@click.command()
+@click.group(invoke_without_command=True)
 @click.option("--mode", type=click.Choice(["all", "prs", "issues", "claims", "forks"]), default="all",
               help="What to show: all (default), prs, issues, claims, forks.")
 @click.option("--repo", default=None, help="Filter to a single repo (owner/repo).")
@@ -284,23 +304,18 @@ def _print_summary(summary: dict) -> None:
 @click.option("--min-age-hours", default=None, type=float, help="Ignore activity younger than N hours (overrides TRIAGE_MIN_AGE_HOURS).")
 @click.option("--forks", "run_forks", is_flag=True, help="Run interactive fork assistant after report.")
 @click.option("--claims-days", default=14, show_default=True, help="How many days back to look for merged PRs.")
-def cli(mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days):
+@click.pass_context
+def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days):
     """
     3riage — GitHub contribution triage tool.
 
     Shows PRs where the ball is in your court, issues you're involved in
     with no PR yet, and repos you haven't forked.
-    """
-    # --- Auth ---
-    token = os.getenv("GITHUB_TOKEN") or _gh_auth_token()
-    username = os.getenv("GITHUB_USERNAME")
 
-    if not token:
-        click.echo(_c("Error: GITHUB_TOKEN not set. Set it in .triage.env or as an env var.", RED), err=True)
-        sys.exit(1)
-    if not username:
-        click.echo(_c("Error: GITHUB_USERNAME not set. Set it in .triage.env or as an env var.", RED), err=True)
-        sys.exit(1)
+    Run `3riage ui` to launch the local web dashboard.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
 
     # --- Config ---
     ignore_bots = os.getenv("TRIAGE_IGNORE_BOTS", "true").lower() != "false"
@@ -321,11 +336,16 @@ def cli(mode, repo, output_json, include_drafts, min_age_hours, run_forks, claim
     if repo:
         only_repos = {repo}
 
+    # --- Auth ---
+    try:
+        client, username = _resolve_cli_auth(ignore_bots=ignore_bots)
+    except Exception as e:
+        click.echo(_c(f"Error: {e}", RED), err=True)
+        sys.exit(1)
+
     if not output_json:
         click.echo(_c(f"\n  3riage  @{username}", BOLD + CYAN))
         click.echo(_c("  Fetching from GitHub…", DIM))
-
-    client = GitHubClient(token=token, username=username, ignore_bots=ignore_bots)
 
     try:
         data = run_triage(
@@ -367,6 +387,48 @@ def cli(mode, repo, output_json, include_drafts, min_age_hours, run_forks, claim
 
     if run_forks or mode == "forks":
         _run_fork_assistant(data["fork_report"])
+
+
+@cli.command("ui")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host interface to bind.")
+@click.option("--port", default=5000, show_default=True, type=int, help="Port to serve dashboard on.")
+@click.option("--no-browser", is_flag=True, help="Do not open browser automatically.")
+@click.option("--demo", is_flag=True, help="Start dashboard in curated sandbox demo mode.")
+def ui(host: str, port: int, no_browser: bool, demo: bool) -> None:
+    """Launch the local 3riage web dashboard."""
+    if demo:
+        os.environ["TRIAGE_FORCE_DEMO"] = "1"
+        click.echo(_c("\n  3riage ui  [sandbox demo mode]", BOLD + MAGENTA))
+    else:
+        token = (os.getenv("GITHUB_TOKEN") or "").strip() or _gh_auth_token()
+        if token:
+            os.environ["GITHUB_TOKEN"] = token
+            username = (os.getenv("GITHUB_USERNAME") or "").strip()
+            if not username:
+                try:
+                    username = GitHubClient(token=token).get_viewer_login()
+                    os.environ["GITHUB_USERNAME"] = username
+                except Exception as e:
+                    click.echo(_c(f"Warning: could not resolve GitHub username ({e}); falling back to demo mode.", YELLOW), err=True)
+                    os.environ.pop("GITHUB_TOKEN", None)
+                    os.environ["TRIAGE_FORCE_DEMO"] = "1"
+            if os.getenv("GITHUB_TOKEN") and os.getenv("GITHUB_USERNAME"):
+                click.echo(_c(f"\n  3riage ui  @{os.environ['GITHUB_USERNAME']}", BOLD + CYAN))
+        else:
+            click.echo(
+                _c("\n  3riage ui  [demo mode — run `gh auth login` or set GITHUB_TOKEN for live data]", YELLOW)
+            )
+
+    url = f"http://{host}:{port}"
+    click.echo(_c(f"  Dashboard running at {url}", GREEN))
+
+    if not no_browser:
+        timer = threading.Timer(0.8, lambda: webbrowser.open(url))
+        timer.daemon = True
+        timer.start()
+
+    from app import app as flask_app
+    flask_app.run(host=host, port=port, debug=False)
 
 
 def _gh_auth_token() -> str | None:

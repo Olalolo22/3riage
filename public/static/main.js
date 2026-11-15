@@ -11,6 +11,12 @@
   let searchQuery = '';
   let selectedItem = null;
   let flatItemsList = [];
+  let isDemoMode = false;
+  let authMode = 'demo';
+  let oauthConfigured = false;
+  let canForkViaCli = false;
+  let loadGeneration = 0;
+  let lastModalTrigger = null;
 
   // DOM Elements
   const statusUser = document.getElementById('status-user');
@@ -23,6 +29,7 @@
   const searchInput = document.getElementById('search-input');
   const btnThemeToggle = document.getElementById('btn-theme-toggle');
   const btnRefresh = document.getElementById('btn-refresh');
+  const btnLogout = document.getElementById('btn-logout');
   const listContainer = document.getElementById('list-container');
   const listTitle = document.getElementById('list-title');
   const listCounter = document.getElementById('list-counter');
@@ -31,41 +38,69 @@
   const filterTabs = document.querySelectorAll('.filter-tab');
   const mainContent = document.getElementById('main-content');
   const btnBackToList = document.getElementById('btn-back-to-list');
+  const demoBanner = document.getElementById('demo-banner');
+  const btnBannerConnect = document.getElementById('btn-banner-connect');
+  const connectModal = document.getElementById('connect-modal');
+  const btnCloseModal = document.getElementById('btn-close-modal');
+  const btnModalDismiss = document.getElementById('btn-modal-dismiss');
 
   // -------------------------------------------------------------------------
   // Lifecycle & Fetching
   // -------------------------------------------------------------------------
 
+  function consumeAuthErrorParam() {
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get('auth_error');
+    if (!err) return;
+
+    const messages = {
+      access_denied: 'GitHub sign-in was cancelled.',
+      invalid_state: 'Sign-in state expired or did not match. Please try again.',
+      oauth_failed: 'Could not complete GitHub sign-in. Please try again.',
+      oauth_not_configured: 'GitHub OAuth is not configured on this host yet.',
+    };
+    showToast(messages[err] || `GitHub auth notice: ${err}`);
+
+    params.delete('auth_error');
+    const nextQs = params.toString();
+    const nextUrl = `${window.location.pathname}${nextQs ? '?' + nextQs : ''}${window.location.hash}`;
+    window.history.replaceState({}, '', nextUrl);
+  }
+
   async function loadTriage(forceRefresh = false) {
+    const requestGen = ++loadGeneration;
     btnRefresh.classList.add('spinning');
     renderSkeletons();
 
     try {
-      const url = forceRefresh ? '/api/refresh' : '/api/triage';
+      const params = new URLSearchParams(window.location.search);
+      const isForcedDemo = params.get('demo') === 'true' || params.get('demo') === '1';
+      const url = forceRefresh
+        ? `/api/refresh${isForcedDemo ? '?demo=true' : ''}`
+        : `/api/triage${isForcedDemo ? '?demo=true' : ''}`;
       const method = forceRefresh ? 'POST' : 'GET';
       const res = await fetch(url, { method });
       const json = await res.json();
+      if (requestGen !== loadGeneration) return;
+
+      if (res.status === 401) {
+        showToast(json.error || 'GitHub session expired. Showing demo mode.');
+        const fallbackRes = await fetch('/api/triage?demo=true');
+        const fallbackJson = await fallbackRes.json();
+        if (requestGen !== loadGeneration) return;
+        if (fallbackJson.status === 'ok') {
+          applyTriageResponse(fallbackJson);
+          return;
+        }
+      }
 
       if (json.status !== 'ok') {
         throw new Error(json.error || 'Failed to fetch triage data');
       }
 
-      triageData = json.data;
-      updateHeader();
-      renderFeed();
-
-      // Preserve or auto-select first item
-      if (flatItemsList.length > 0) {
-        if (!selectedItem || !flatItemsList.find(i => getItemId(i) === getItemId(selectedItem))) {
-          selectItem(flatItemsList[0]);
-        } else {
-          selectItem(selectedItem);
-        }
-      } else {
-        selectedItem = null;
-        renderDetail(null);
-      }
+      applyTriageResponse(json);
     } catch (err) {
+      if (requestGen !== loadGeneration) return;
       console.error(err);
       connectionStatus.classList.add('offline');
       statusUser.textContent = 'Error connecting';
@@ -73,18 +108,54 @@
         <div style="padding: 24px 16px; color: var(--color-red); font-size: 12px; line-height: 1.6;">
           <strong>Error loading triage:</strong><br>${escapeHtml(err.message)}
           <br><br>
-          <span style="color: var(--text-muted);">Ensure <code>.triage.env</code> has valid credentials and rerun.</span>
+          <span style="color: var(--text-muted);">Try refreshing or reconnecting your GitHub account.</span>
         </div>
       `;
     } finally {
-      btnRefresh.classList.remove('spinning');
+      if (requestGen === loadGeneration) {
+        btnRefresh.classList.remove('spinning');
+      }
+    }
+  }
+
+  function applyTriageResponse(json) {
+    triageData = json.data;
+    isDemoMode = !!json.is_demo;
+    authMode = json.auth_mode || (isDemoMode ? 'demo' : 'env');
+    oauthConfigured = !!json.oauth_configured;
+    canForkViaCli = !!json.can_fork_via_cli;
+
+    updateHeader();
+    renderFeed();
+
+    if (flatItemsList.length > 0) {
+      const refreshedMatch = selectedItem
+        ? flatItemsList.find(i => getItemId(i) === getItemId(selectedItem))
+        : null;
+      selectItem(refreshedMatch || flatItemsList[0]);
+    } else {
+      selectedItem = null;
+      renderDetail(null);
     }
   }
 
   function updateHeader() {
     if (!triageData) return;
     connectionStatus.classList.remove('offline');
-    statusUser.textContent = `@${triageData.username}`;
+
+    if (demoBanner) {
+      demoBanner.style.display = isDemoMode ? 'flex' : 'none';
+    }
+
+    if (btnLogout) {
+      btnLogout.classList.toggle('hidden', authMode !== 'oauth');
+    }
+
+    if (isDemoMode) {
+      statusUser.textContent = `@${triageData.username} (sample)`;
+    } else {
+      statusUser.textContent = `@${triageData.username}`;
+    }
 
     const s = triageData.summary;
     const totalActive = s.needs_you + s.waiting_on_them + s.unlinked_issues + s.ready_to_claim;
@@ -177,7 +248,6 @@
     let currentCategory = '';
 
     flatItemsList.forEach(item => {
-      // Category group header if in 'all' view
       if (activeFilter === 'all' && item.category !== currentCategory) {
         currentCategory = item.category;
         const labels = {
@@ -187,7 +257,7 @@
           issues: '📋 Unlinked Issues & Bids',
           claims: '🏆 Ready to Claim'
         };
-        html += `<div class="list-section-header">${labels[currentCategory] || currentCategory}</div>`;
+        html += `<div class="list-section-header">${labels[currentCategory] || escapeHtml(currentCategory)}</div>`;
       }
 
       const isSelected = selectedItem && getItemId(selectedItem) === getItemId(item);
@@ -205,7 +275,7 @@
           pillHtml = `<span class="pill pill-green">Probably fine</span>`;
         }
         if (item.review_state) {
-          pillHtml += ` <span class="pill pill-muted">${item.review_state}</span>`;
+          pillHtml += ` <span class="pill pill-muted">${escapeHtml(item.review_state)}</span>`;
         }
         ageText = item.their_last_comment_days_ago != null
           ? `${item.their_last_comment_days_ago}d ago`
@@ -219,7 +289,7 @@
         } else if (item.role === 'outbid') {
           pillHtml = `<span class="pill pill-muted">outbid</span>`;
         } else {
-          pillHtml = `<span class="pill pill-cyan">${item.role}</span>`;
+          pillHtml = `<span class="pill pill-cyan">${escapeHtml(item.role)}</span>`;
         }
         if (item.forked) {
           pillHtml += ` <span class="pill pill-green">forked</span>`;
@@ -230,14 +300,15 @@
         ageText = `${item.merged_days_ago}d ago`;
       }
 
+      const safeId = escapeHtml(getItemId(item));
       html += `
-        <div class="list-row ${isSelected ? 'active' : ''} ${isDimmed ? 'dimmed' : ''}" data-id="${getItemId(item)}">
+        <div class="list-row ${isSelected ? 'active' : ''} ${isDimmed ? 'dimmed' : ''}" data-id="${safeId}">
           <div class="row-top">
             <div class="row-repo-badge">
               <span class="row-repo-name">${escapeHtml(item.repo)}</span>
-              <span class="row-number">#${item.number}</span>
+              <span class="row-number">#${Number(item.number)}</span>
             </div>
-            <span class="row-age">${ageText}</span>
+            <span class="row-age">${escapeHtml(ageText)}</span>
           </div>
           <div class="row-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
           <div class="row-meta">
@@ -249,7 +320,6 @@
 
     listContainer.innerHTML = html;
 
-    // Attach click listeners to rows
     listContainer.querySelectorAll('.list-row').forEach(row => {
       row.addEventListener('click', () => {
         const id = row.getAttribute('data-id');
@@ -271,7 +341,6 @@
   function selectItem(item) {
     selectedItem = item;
 
-    // Update active row class
     listContainer.querySelectorAll('.list-row').forEach(row => {
       row.classList.toggle('active', row.getAttribute('data-id') === getItemId(item));
     });
@@ -296,6 +365,22 @@
     } else if (item.type === 'claim') {
       renderClaimDetail(item);
     }
+
+    bindCopyButtons();
+  }
+
+  function bindCopyButtons() {
+    detailContent.querySelectorAll('[data-copy-url]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const urlToCopy = btn.getAttribute('data-copy-url') || '';
+        const msg = btn.getAttribute('data-copy-msg') || 'URL copied to clipboard';
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(urlToCopy).then(() => showToast(msg)).catch(() => showToast('Copy failed'));
+        } else {
+          showToast(urlToCopy);
+        }
+      });
+    });
   }
 
   function renderPrDetail(item) {
@@ -307,10 +392,10 @@
       decisionBorder = 'border-red';
       if (item.review_state === 'CHANGES_REQUESTED') {
         decisionHeadline = '⚡ Action Required: Changes Requested';
-        decisionSubtext = `Reviewer @${item.review_author || 'maintainer'} requested changes. You have not pushed a subsequent commit yet.`;
+        decisionSubtext = `Reviewer @${escapeHtml(item.review_author || 'maintainer')} requested changes. You have not pushed a subsequent commit yet.`;
       } else {
         decisionHeadline = '⚡ Action Required: Reviewer Spoke Last';
-        decisionSubtext = `@${item.their_last_comment_author || 'Maintainer'} left feedback. Ball is in your court to respond or commit.`;
+        decisionSubtext = `@${escapeHtml(item.their_last_comment_author || 'Maintainer')} left feedback. Ball is in your court to respond or commit.`;
       }
     } else if (item.bucket === 'PROBABLY_FINE') {
       decisionBorder = 'border-green';
@@ -320,14 +405,15 @@
 
     const snippet = item.their_last_comment_body || item.review_body || '';
     const snippetAuthor = item.their_last_comment_author || item.review_author || 'maintainer';
+    const itemUrl = safeUrl(item.url);
 
     detailContent.innerHTML = `
       <div class="detail-header">
         <div class="detail-breadcrumb">
-          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${item.number}</span>
+          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${Number(item.number)}</span>
           <div class="detail-actions">
-            <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('${item.url}'); showToast('URL copied to clipboard');">Copy Link</button>
-            <a href="${item.url}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open PR ↗</a>
+            <button class="btn btn-secondary" data-copy-url="${escapeHtml(itemUrl)}" data-copy-msg="URL copied to clipboard">Copy Link</button>
+            <a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open PR ↗</a>
           </div>
         </div>
         <h2 class="detail-title">${escapeHtml(item.title)}</h2>
@@ -384,20 +470,31 @@
     } else if (item.role === 'outbid') {
       decisionBorder = 'border-muted';
       decisionHeadline = '🚫 Bid Closed: Assigned to Competitor';
-      decisionSubtext = `The maintainer assigned this issue to @${(item.applicant_list || []).join(', @') || 'another developer'}.`;
+      const competitors = (item.applicant_list || []).map(a => `@${escapeHtml(a)}`).join(', ');
+      decisionSubtext = `The maintainer assigned this issue to ${competitors || 'another developer'}.`;
     }
 
     const forkReport = (triageData.fork_report || []).find(f => f.repo.toLowerCase() === item.repo.toLowerCase());
     const needsFork = forkReport ? forkReport.needs_fork : !item.forked;
+    const itemUrl = safeUrl(item.url);
+
+    let forkActionHtml = '';
+    if (needsFork) {
+      if (canForkViaCli || isDemoMode) {
+        forkActionHtml = `<button class="btn btn-secondary" id="btn-fork-repo" data-repo="${escapeHtml(item.repo)}">🍴 Fork Repo</button>`;
+      } else {
+        forkActionHtml = `<a href="${escapeHtml(safeForkUrl(item.repo))}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">🍴 Fork on GitHub ↗</a>`;
+      }
+    }
 
     detailContent.innerHTML = `
       <div class="detail-header">
         <div class="detail-breadcrumb">
-          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${item.number}</span>
+          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${Number(item.number)}</span>
           <div class="detail-actions">
-            ${needsFork ? `<button class="btn btn-secondary" id="btn-fork-repo" data-repo="${escapeHtml(item.repo)}">🍴 Fork Repo</button>` : ''}
-            <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('${item.url}'); showToast('Issue URL copied');">Copy Link</button>
-            <a href="${item.url}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open Issue ↗</a>
+            ${forkActionHtml}
+            <button class="btn btn-secondary" data-copy-url="${escapeHtml(itemUrl)}" data-copy-msg="Issue URL copied">Copy Link</button>
+            <a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open Issue ↗</a>
           </div>
         </div>
         <h2 class="detail-title">${escapeHtml(item.title)}</h2>
@@ -443,7 +540,6 @@
       </div>
     `;
 
-    // Hook Fork Button
     const btnFork = detailContent.querySelector('#btn-fork-repo');
     if (btnFork) {
       btnFork.addEventListener('click', () => handleFork(item.repo, btnFork));
@@ -451,13 +547,15 @@
   }
 
   function renderClaimDetail(item) {
+    const itemUrl = safeUrl(item.url);
+
     detailContent.innerHTML = `
       <div class="detail-header">
         <div class="detail-breadcrumb">
-          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${item.number}</span>
+          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${Number(item.number)}</span>
           <div class="detail-actions">
-            <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('${item.url}'); showToast('PR link copied for Discord!');">Copy for Discord</button>
-            <a href="${item.url}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open Merged PR ↗</a>
+            <button class="btn btn-secondary" data-copy-url="${escapeHtml(itemUrl)}" data-copy-msg="PR link copied for Discord!">Copy for Discord</button>
+            <a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open Merged PR ↗</a>
           </div>
         </div>
         <h2 class="detail-title">${escapeHtml(item.title)}</h2>
@@ -472,18 +570,18 @@
         <div class="detail-section-title">Claiming Payload</div>
         <div class="feedback-quote" style="font-family: var(--font-mono); font-size: 12px;">
           ${escapeHtml(item.title)}<br>
-          ${escapeHtml(item.url)}
+          ${escapeHtml(itemUrl)}
         </div>
       </div>
     `;
   }
 
   // -------------------------------------------------------------------------
-  // Fork Execution (Localhost only)
+  // Fork Execution (Local CLI or Demo Simulation)
   // -------------------------------------------------------------------------
 
   async function handleFork(repo, btnElement) {
-    if (!confirm(`Trigger fork for ${repo} under your GitHub account via local 'gh' CLI?`)) {
+    if (!isDemoMode && !confirm(`Trigger fork for ${repo} under your GitHub account via local 'gh' CLI?`)) {
       return;
     }
 
@@ -494,12 +592,14 @@
       const res = await fetch('/api/fork', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo })
+        body: JSON.stringify({ repo, demo: isDemoMode })
       });
       const data = await res.json();
       if (data.status === 'ok') {
-        showToast(`✓ Fork initiated for ${repo}`);
-        setTimeout(() => loadTriage(true), 4000);
+        showToast(data.message || `✓ Fork initiated for ${repo}`);
+        if (!isDemoMode) {
+          setTimeout(() => loadTriage(true), 4000);
+        }
       } else {
         alert(`Fork error: ${data.error}`);
       }
@@ -508,6 +608,79 @@
     } finally {
       btnElement.disabled = false;
       btnElement.textContent = '🍴 Fork Repo';
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Auth / Modal Actions
+  // -------------------------------------------------------------------------
+
+  function handleConnectClick() {
+    if (oauthConfigured) {
+      window.location.href = '/api/auth/login';
+      return;
+    }
+    openConnectModal();
+  }
+
+  function getModalFocusableElements() {
+    if (!connectModal) return [];
+    return Array.from(
+      connectModal.querySelectorAll(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter(el => el.offsetParent !== null);
+  }
+
+  function openConnectModal() {
+    if (!connectModal) return;
+    lastModalTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    connectModal.classList.remove('hidden');
+    const focusables = getModalFocusableElements();
+    if (focusables.length > 0) {
+      focusables[0].focus();
+    }
+  }
+
+  function closeConnectModal() {
+    if (!connectModal) return;
+    connectModal.classList.add('hidden');
+    if (lastModalTrigger && typeof lastModalTrigger.focus === 'function') {
+      lastModalTrigger.focus();
+    }
+    lastModalTrigger = null;
+  }
+
+  async function handleLogout() {
+    try {
+      const res = await fetch('/api/auth/logout', { method: 'POST' });
+      if (!res.ok) {
+        let errMsg = `Sign out failed (${res.status})`;
+        try {
+          const errJson = await res.json();
+          if (errJson && errJson.error) errMsg = errJson.error;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+
+      loadGeneration++;
+      triageData = null;
+      selectedItem = null;
+      flatItemsList = [];
+      if (listContainer) listContainer.innerHTML = '';
+      if (listCounter) listCounter.textContent = '0 items';
+      if (detailContent) {
+        detailContent.innerHTML = '';
+        detailContent.classList.add('hidden');
+      }
+      if (emptyDetail) emptyDetail.classList.remove('hidden');
+      if (btnLogout) btnLogout.classList.add('hidden');
+      if (mainContent) mainContent.classList.remove('viewing-detail');
+
+      showToast('Signed out of GitHub');
+      await loadTriage(false);
+    } catch (e) {
+      showToast(`Sign out failed: ${e.message}`);
     }
   }
 
@@ -524,11 +697,11 @@
     toast.textContent = msg;
     document.body.appendChild(toast);
 
-    setTimeout(() => toast.remove(), 2500);
+    setTimeout(() => toast.remove(), 3000);
   }
 
   function escapeHtml(str) {
-    if (!str) return '';
+    if (str === null || str === undefined) return '';
     return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
@@ -537,19 +710,60 @@
       .replace(/'/g, '&#039;');
   }
 
+  function safeUrl(url) {
+    if (!url || typeof url !== 'string') return '#';
+    try {
+      const parsed = new URL(url, window.location.origin);
+      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+        return parsed.href;
+      }
+    } catch (e) {}
+    return '#';
+  }
+
+  function safeForkUrl(repo) {
+    if (!repo || !repo.includes('/')) return 'https://github.com/';
+    const parts = repo.split('/');
+    return `https://github.com/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}/fork`;
+  }
+
   // -------------------------------------------------------------------------
   // Keyboard Navigation
   // -------------------------------------------------------------------------
 
   window.addEventListener('keydown', e => {
-    // Search focus: /
+    if (connectModal && !connectModal.classList.contains('hidden')) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeConnectModal();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = getModalFocusableElements();
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && (document.activeElement === first || !connectModal.contains(document.activeElement))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && (document.activeElement === last || !connectModal.contains(document.activeElement))) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      }
+      return;
+    }
+
     if (e.key === '/' && document.activeElement !== searchInput) {
       e.preventDefault();
       searchInput.focus();
       return;
     }
 
-    // Escape: clear search
     if (e.key === 'Escape' && document.activeElement === searchInput) {
       searchInput.value = '';
       searchQuery = '';
@@ -558,12 +772,10 @@
       return;
     }
 
-    // If focused on an input, don't trigger navigation
     if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
       return;
     }
 
-    // Arrow keys & j/k navigation
     if (['ArrowDown', 'j', 'J'].includes(e.key)) {
       e.preventDefault();
       moveSelection(1);
@@ -575,7 +787,10 @@
       toggleTheme();
     } else if (e.key === 'Enter') {
       if (selectedItem && selectedItem.url) {
-        window.open(selectedItem.url, '_blank');
+        const target = safeUrl(selectedItem.url);
+        if (target !== '#') {
+          window.open(target, '_blank', 'noopener,noreferrer');
+        }
       }
     }
   });
@@ -605,8 +820,7 @@
 
     selectItem(flatItemsList[nextIndex]);
 
-    // Scroll active row into view
-    const activeRow = listContainer.querySelector(`.list-row[data-id="${getItemId(flatItemsList[nextIndex])}"]`);
+    const activeRow = listContainer.querySelector(`.list-row[data-id="${CSS.escape(getItemId(flatItemsList[nextIndex]))}"]`);
     if (activeRow) {
       activeRow.scrollIntoView({ block: 'nearest' });
     }
@@ -646,16 +860,39 @@
     btnThemeToggle.addEventListener('click', toggleTheme);
   }
 
+  if (btnLogout) {
+    btnLogout.addEventListener('click', handleLogout);
+  }
+
   if (btnBackToList) {
     btnBackToList.addEventListener('click', () => {
       if (mainContent) mainContent.classList.remove('viewing-detail');
     });
   }
 
-  // Expose global helpers
+  if (btnBannerConnect) {
+    btnBannerConnect.addEventListener('click', handleConnectClick);
+  }
+
+  if (btnCloseModal) {
+    btnCloseModal.addEventListener('click', closeConnectModal);
+  }
+
+  if (btnModalDismiss) {
+    btnModalDismiss.addEventListener('click', closeConnectModal);
+  }
+
+  if (connectModal) {
+    connectModal.addEventListener('click', e => {
+      if (e.target === connectModal) {
+        closeConnectModal();
+      }
+    });
+  }
+
   window.showToast = showToast;
   window.toggleTheme = toggleTheme;
 
-  // Initial load
+  consumeAuthErrorParam();
   loadTriage(false);
 })();

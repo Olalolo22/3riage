@@ -51,7 +51,7 @@ def _is_bot(login: str) -> bool:
 
 
 class GitHubClient:
-    def __init__(self, token: str, username: str, ignore_bots: bool = True):
+    def __init__(self, token: str, username: str = "", ignore_bots: bool = True):
         self.username = username
         self.ignore_bots = ignore_bots
         self.session = requests.Session()
@@ -76,6 +76,23 @@ class GitHubClient:
         if "errors" in body:
             raise RuntimeError(f"GraphQL errors: {body['errors']}")
         return body["data"]
+
+    _VIEWER_QUERY = """
+    query {
+      viewer {
+        login
+      }
+    }
+    """
+
+    def get_viewer_login(self) -> str:
+        """Return the authenticated GitHub user's login for the current token."""
+        data = self._gql(self._VIEWER_QUERY, {})
+        login = (data.get("viewer") or {}).get("login", "")
+        if not login:
+            raise RuntimeError("Could not resolve authenticated GitHub login from viewer query.")
+        self.username = login
+        return login
 
     # ------------------------------------------------------------------
     # Open PRs authored by the user

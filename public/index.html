@@ -57,8 +57,22 @@
           <svg class="icon-refresh" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
           <span class="refresh-text">Refresh</span>
         </button>
+        <button class="btn btn-logout hidden" id="btn-logout" title="Disconnect GitHub session">Sign out</button>
       </div>
     </header>
+
+    <!-- Persistent Demo Banner (Visible when is_demo is active) -->
+    <aside class="demo-banner" id="demo-banner" style="display: none;" aria-label="Sample data banner">
+      <div class="demo-banner-content">
+        <span class="demo-pill">DEMO</span>
+        <span class="demo-text">Viewing sample data.</span>
+      </div>
+      <div class="demo-banner-actions">
+        <button class="banner-btn-connect" id="btn-banner-connect">Connect GitHub</button>
+        <span class="banner-separator">•</span>
+        <a href="https://github.com/Olalolo22/3riage#self-hosting" target="_blank" rel="noopener noreferrer" class="banner-link">Deploy your own</a>
+      </div>
+    </aside>
 
     <!-- Main Content Area: Split 2-Pane on Desktop, View-Switched on Mobile -->
     <main class="main-content" id="main-content">
@@ -101,6 +115,34 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- Connect / Setup Modal (shown when OAuth is not configured on host) -->
+  <div class="modal-backdrop hidden" id="connect-modal" role="dialog" aria-modal="true" aria-labelledby="connect-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="connect-modal-title">Connect Your GitHub</h3>
+        <button class="modal-close" id="btn-close-modal" aria-label="Close modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-intro">
+          GitHub OAuth is not configured on this server yet. You can run 3riage locally in one command using your existing <code>gh</code> session, or configure GitHub OAuth for public hosting.
+        </p>
+        <div class="modal-block">
+          <div class="modal-block-title">Option A — Run locally via CLI (zero setup)</div>
+          <pre class="modal-code">pipx install git+https://github.com/Olalolo22/3riage.git@4public
+3riage ui</pre>
+        </div>
+        <div class="modal-block">
+          <div class="modal-block-title">Option B — Enable 1-Click OAuth on this deployment</div>
+          <p class="modal-sub">Set <code>GITHUB_OAUTH_CLIENT_ID</code>, <code>GITHUB_OAUTH_CLIENT_SECRET</code>, and <code>SESSION_SECRET</code> in your deployment environment.</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <a href="https://github.com/Olalolo22/3riage#self-hosting" target="_blank" rel="noopener noreferrer" class="btn btn-primary">View Self-Hosting Guide ↗</a>
+        <button class="btn btn-secondary" id="btn-modal-dismiss">Stay in Demo</button>
+      </div>
+    </div>
   </div>
 
   <script src="/static/main.js"></script>
