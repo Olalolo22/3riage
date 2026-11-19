@@ -49,6 +49,25 @@
   const btnCloseModal = document.getElementById('btn-close-modal');
   const btnModalDismiss = document.getElementById('btn-modal-dismiss');
 
+  const SVG_ICONS = {
+    zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>',
+    clock: '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>',
+    checkCircle: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>',
+    issue: '<circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="2" fill="currentColor"></circle>',
+    award: '<circle cx="12" cy="8" r="6"></circle><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"></path>',
+    ban: '<circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>',
+    fork: '<circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"></path><path d="M12 12v3"></path>',
+    check: '<polyline points="20 6 9 17 4 12"></polyline>',
+    xCircle: '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>',
+  };
+
+  function uiIcon(name, colorClass = '', size = 13) {
+    const inner = SVG_ICONS[name];
+    if (!inner) return '';
+    const cls = colorClass ? `ui-icon ${colorClass}` : 'ui-icon';
+    return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle & Fetching
   // -------------------------------------------------------------------------
@@ -306,12 +325,12 @@
 
     const titles = {
       all: 'All Active Items',
-      needs_you: '⚡ Needs Your Attention',
-      waiting: '⏳ Waiting on Others',
-      issues: '📋 Unlinked Bids & Issues',
-      claims: '🏆 Ready to Claim'
+      needs_you: `${uiIcon('zap', 'icon-red', 12)} Needs Your Attention`,
+      waiting: `${uiIcon('clock', 'icon-yellow', 12)} Waiting on Others`,
+      issues: `${uiIcon('issue', 'icon-cyan', 12)} Unlinked Bids & Issues`,
+      claims: `${uiIcon('award', 'icon-purple', 12)} Ready to Claim`
     };
-    listTitle.textContent = titles[activeFilter] || 'Triage Feed';
+    listTitle.innerHTML = titles[activeFilter] || 'Triage Feed';
 
     if (flatItemsList.length === 0) {
       listContainer.innerHTML = `
@@ -329,11 +348,11 @@
       if (activeFilter === 'all' && item.category !== currentCategory) {
         currentCategory = item.category;
         const labels = {
-          needs_you: '⚡ Needs You',
-          waiting: '⏳ Waiting on Them',
-          probably_fine: '✅ Probably Fine',
-          issues: '📋 Unlinked Issues & Bids',
-          claims: '🏆 Ready to Claim'
+          needs_you: `${uiIcon('zap', 'icon-red', 11)} Needs You`,
+          waiting: `${uiIcon('clock', 'icon-yellow', 11)} Waiting on Them`,
+          probably_fine: `${uiIcon('checkCircle', 'icon-green', 11)} Probably Fine`,
+          issues: `${uiIcon('issue', 'icon-cyan', 11)} Unlinked Issues & Bids`,
+          claims: `${uiIcon('award', 'icon-purple', 11)} Ready to Claim`
         };
         html += `<div class="list-section-header">${labels[currentCategory] || escapeHtml(currentCategory)}</div>`;
       }
@@ -463,21 +482,21 @@
 
   function renderPrDetail(item) {
     let decisionBorder = 'border-yellow';
-    let decisionHeadline = '⏳ Waiting on Maintainer Review';
+    let decisionHeadline = `${uiIcon('clock', 'icon-yellow', 15)} Waiting on Maintainer Review`;
     let decisionSubtext = 'Your activity is newer than theirs. A clean push is awaiting maintainer feedback or merge.';
 
     if (item.bucket === 'NEEDS_YOU') {
       decisionBorder = 'border-red';
       if (item.review_state === 'CHANGES_REQUESTED') {
-        decisionHeadline = '⚡ Action Required: Changes Requested';
+        decisionHeadline = `${uiIcon('zap', 'icon-red', 15)} Action Required: Changes Requested`;
         decisionSubtext = `Reviewer @${escapeHtml(item.review_author || 'maintainer')} requested changes. You have not pushed a subsequent commit yet.`;
       } else {
-        decisionHeadline = '⚡ Action Required: Reviewer Spoke Last';
+        decisionHeadline = `${uiIcon('zap', 'icon-red', 15)} Action Required: Reviewer Spoke Last`;
         decisionSubtext = `@${escapeHtml(item.their_last_comment_author || 'Maintainer')} left feedback. Ball is in your court to respond or commit.`;
       }
     } else if (item.bucket === 'PROBABLY_FINE') {
       decisionBorder = 'border-green';
-      decisionHeadline = '✅ Probably Fine: Approval or Sign-off';
+      decisionHeadline = `${uiIcon('checkCircle', 'icon-green', 15)} Probably Fine: Approval or Sign-off`;
       decisionSubtext = 'All submitted reviews are approved, or the last comment indicates sign-off (LGTM).';
     }
 
@@ -538,16 +557,16 @@
 
   function renderIssueDetail(item) {
     let decisionBorder = 'border-purple';
-    let decisionHeadline = '📋 Bounty Bid / Application Active';
+    let decisionHeadline = `${uiIcon('issue', 'icon-purple', 15)} Bounty Bid / Application Active`;
     let decisionSubtext = `You applied for this issue. There are ${item.applicant_count || 1} competing applicants. Issue is currently unassigned.`;
 
     if (item.role === 'assignee') {
       decisionBorder = 'border-red';
-      decisionHeadline = '⚡ Assigned to You: Active Task';
+      decisionHeadline = `${uiIcon('zap', 'icon-red', 15)} Assigned to You: Active Task`;
       decisionSubtext = 'The maintainer officially assigned this issue to you. Fork and submit a PR to complete it.';
     } else if (item.role === 'outbid') {
       decisionBorder = 'border-muted';
-      decisionHeadline = '🚫 Bid Closed: Assigned to Competitor';
+      decisionHeadline = `${uiIcon('ban', 'icon-muted', 15)} Bid Closed: Assigned to Competitor`;
       const competitors = (item.applicant_list || []).map(a => `@${escapeHtml(a)}`).join(', ');
       decisionSubtext = `The maintainer assigned this issue to ${competitors || 'another developer'}.`;
     }
@@ -559,9 +578,9 @@
     let forkActionHtml = '';
     if (needsFork) {
       if (canForkViaCli || isDemoMode) {
-        forkActionHtml = `<button class="btn btn-secondary" id="btn-fork-repo" data-repo="${escapeHtml(item.repo)}">🍴 Fork Repo</button>`;
+        forkActionHtml = `<button class="btn btn-secondary" id="btn-fork-repo" data-repo="${escapeHtml(item.repo)}">${uiIcon('fork', '', 13)} Fork Repo</button>`;
       } else {
-        forkActionHtml = `<a href="${escapeHtml(safeForkUrl(item.repo))}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">🍴 Fork on GitHub ↗</a>`;
+        forkActionHtml = `<a href="${escapeHtml(safeForkUrl(item.repo))}" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">${uiIcon('fork', '', 13)} Fork on GitHub ↗</a>`;
       }
     }
 
@@ -610,8 +629,8 @@
           </div>
           <div class="meta-item">
             <span class="meta-label">Fork Status</span>
-            <span class="meta-value" style="color: ${item.forked ? 'var(--color-green)' : 'var(--color-yellow)'};">
-              ${item.forked ? '✓ Already forked' : '✗ Unforked'}
+            <span class="meta-value meta-value-icon" style="color: ${item.forked ? 'var(--color-green)' : 'var(--color-yellow)'};">
+              ${item.forked ? `${uiIcon('check', '', 13)} Already forked` : `${uiIcon('xCircle', '', 13)} Unforked`}
             </span>
           </div>
         </div>
@@ -640,7 +659,7 @@
       </div>
 
       <div class="decision-card border-purple">
-        <div class="decision-header">🏆 Merged: Ready to Claim Bounty / Points</div>
+        <div class="decision-header">${uiIcon('award', 'icon-purple', 15)} Merged: Ready to Claim Bounty / Points</div>
         <div class="decision-subtext">This pull request merged ${item.merged_days_ago} days ago. Submit this link in your community Discord or Wave channel to claim rewards.</div>
       </div>
 
@@ -674,7 +693,7 @@
       });
       const data = await res.json();
       if (data.status === 'ok') {
-        showToast(data.message || `✓ Fork initiated for ${repo}`);
+        showToast(data.message || `Fork initiated for ${repo}`);
         if (!isDemoMode) {
           setTimeout(() => loadTriage(true), 4000);
         }
@@ -685,7 +704,7 @@
       alert(`Fork request failed: ${e.message}`);
     } finally {
       btnElement.disabled = false;
-      btnElement.textContent = '🍴 Fork Repo';
+      btnElement.innerHTML = `${uiIcon('fork', '', 13)} Fork Repo`;
     }
   }
 

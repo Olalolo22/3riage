@@ -531,6 +531,25 @@ body {
   border-radius: 3px;
 }
 
+.ui-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.icon-red { color: var(--color-red); }
+.icon-yellow { color: var(--color-yellow); }
+.icon-green { color: var(--color-green); }
+.icon-purple { color: var(--color-purple); }
+.icon-cyan { color: var(--color-cyan); }
+.icon-muted { color: var(--text-muted); }
+
+.list-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .list-section-header {
   padding: 8px 14px 4px 14px;
   font-size: 10px;
@@ -540,7 +559,7 @@ body {
   letter-spacing: 0.06em;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
 }
 
 /* Row Item */
