@@ -104,18 +104,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   height: 48px;
   padding: 0 16px;
   background-color: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
   user-select: none;
+  flex-shrink: 0;
   z-index: 10;
 }
 
 .top-bar-left {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .brand {
@@ -164,6 +168,7 @@ body {
   font-family: var(--font-mono);
   padding-left: 12px;
   border-left: 1px solid var(--border-subtle);
+  white-space: nowrap;
 }
 
 .status-dot {
@@ -172,6 +177,7 @@ body {
   border-radius: 50%;
   background-color: var(--color-green);
   box-shadow: 0 0 6px rgba(63, 185, 80, 0.4);
+  flex-shrink: 0;
 }
 
 .connection-status.offline .status-dot {
@@ -184,6 +190,7 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
 }
 
 .filter-tab {
@@ -199,6 +206,7 @@ body {
   font-weight: 500;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  white-space: nowrap;
   transition: all 0.15s ease;
 }
 
@@ -255,6 +263,8 @@ body {
   display: flex;
   align-items: center;
   margin-left: auto;
+  flex: 0 1 200px;
+  min-width: 140px;
 }
 
 .search-icon {
@@ -272,14 +282,13 @@ body {
   font-family: var(--font-sans);
   padding: 4px 28px 4px 28px;
   border-radius: var(--radius-sm);
-  width: 200px;
+  width: 100%;
   transition: all 0.15s ease;
 }
 
 .search-box input:focus {
   outline: none;
   border-color: var(--border-focus);
-  width: 250px;
 }
 
 .search-shortcut {
@@ -1058,6 +1067,54 @@ kbd {
 /* Mobile Detail Bar */
 .mobile-detail-bar {
   display: none;
+}
+
+/* ==========================================================================
+   Responsive / Laptop & Tablet (769px - 1300px)
+   ========================================================================== */
+
+@media (max-width: 1300px) and (min-width: 769px) {
+  .top-bar {
+    height: auto;
+    padding: 8px 16px;
+    display: grid;
+    grid-template-columns: auto minmax(160px, 1fr) auto;
+    grid-template-areas:
+      "brand search actions"
+      "filters filters filters";
+    row-gap: 8px;
+    column-gap: 12px;
+  }
+
+  .top-bar-left {
+    grid-area: brand;
+  }
+
+  .search-box {
+    grid-area: search;
+    margin-left: auto;
+    width: 100%;
+    max-width: 260px;
+  }
+
+  .top-bar-actions {
+    grid-area: actions;
+  }
+
+  .view-filters {
+    grid-area: filters;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .view-filters::-webkit-scrollbar {
+    display: none;
+  }
+
+  .main-content {
+    grid-template-columns: clamp(340px, 40vw, 460px) 1fr;
+  }
 }
 
 /* ==========================================================================
