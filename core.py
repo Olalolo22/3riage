@@ -75,7 +75,7 @@ def _latest_commit_dt(pr: dict) -> datetime | None:
 
 
 def _analyze_reviews(
-    reviews: list[dict], me: str, last_commit_dt: datetime | None
+    reviews: list[dict], me: str, last_commit_dt: datetime | None, ignore_bots: bool = True
 ) -> tuple[str | None, str, str, datetime | None, bool]:
     """
     Analyze reviews per reviewer to correctly handle multi-reviewer state.
@@ -85,8 +85,11 @@ def _analyze_reviews(
     me_lo = me.lower()
     by_author: dict[str, dict] = {}
     for r in reviews:
-        author = r.get("author", {}).get("login", "")
+        author_obj = r.get("author") or {}
+        author = author_obj.get("login", "")
         if not author or author.lower() == me_lo:
+            continue
+        if ignore_bots and _is_bot_author_obj(author_obj):
             continue
         submitted_at = _parse_dt(r.get("submittedAt"))
         prev = by_author.get(author.lower())
@@ -117,7 +120,7 @@ def _analyze_reviews(
         key=lambda r: _parse_dt(r.get("submittedAt")) or datetime.min.replace(tzinfo=timezone.utc),
     )
     primary = blocking_review or latest_overall
-    primary_author = primary.get("author", {}).get("login", "")
+    primary_author = (primary.get("author") or {}).get("login", "")
     primary_body = _snippet(primary.get("body"))
     primary_at = _parse_dt(primary.get("submittedAt"))
 
@@ -141,10 +144,11 @@ def _their_activity(pr: dict, me: str, ignore_bots: bool) -> datetime | None:
 
     # Reviews by others
     for review in pr.get("reviews", {}).get("nodes", []):
-        author = review.get("author", {}).get("login", "")
+        author_obj = review.get("author") or {}
+        author = author_obj.get("login", "")
         if author.lower() == me_lo:
             continue
-        if ignore_bots and _is_bot_login(author):
+        if ignore_bots and _is_bot_author_obj(author_obj):
             continue
         dt = _parse_dt(review.get("submittedAt"))
         if dt:
@@ -155,10 +159,11 @@ def _their_activity(pr: dict, me: str, ignore_bots: bool) -> datetime | None:
         if thread.get("isResolved") or thread.get("isOutdated"):
             continue
         for comment in thread.get("comments", {}).get("nodes", []):
-            author = comment.get("author", {}).get("login", "")
+            author_obj = comment.get("author") or {}
+            author = author_obj.get("login", "")
             if author.lower() == me_lo:
                 continue
-            if ignore_bots and _is_bot_login(author):
+            if ignore_bots and _is_bot_author_obj(author_obj):
                 continue
             dt = _parse_dt(comment.get("createdAt"))
             if dt:
@@ -166,10 +171,11 @@ def _their_activity(pr: dict, me: str, ignore_bots: bool) -> datetime | None:
 
     # Top-level PR comments by others
     for comment in pr.get("comments", {}).get("nodes", []):
-        author = comment.get("author", {}).get("login", "")
+        author_obj = comment.get("author") or {}
+        author = author_obj.get("login", "")
         if author.lower() == me_lo:
             continue
-        if ignore_bots and _is_bot_login(author):
+        if ignore_bots and _is_bot_author_obj(author_obj):
             continue
         dt = _parse_dt(comment.get("createdAt"))
         if dt:
@@ -184,7 +190,7 @@ def _your_activity(pr: dict, me: str) -> datetime | None:
     me_lo = me.lower()
 
     for comment in pr.get("comments", {}).get("nodes", []):
-        if comment.get("author", {}).get("login", "").lower() == me_lo:
+        if (comment.get("author") or {}).get("login", "").lower() == me_lo:
             dt = _parse_dt(comment.get("createdAt"))
             if dt:
                 candidates.append(dt)
@@ -201,15 +207,21 @@ def _is_bot_login(login: str) -> bool:
     return _is_bot(login)
 
 
+def _is_bot_author_obj(author: dict | None) -> bool:
+    from github_client import _is_bot_author
+    return _is_bot_author(author)
+
+
 def _last_their_comment(pr: dict, me: str, ignore_bots: bool) -> dict | None:
     """Return the most recent top-level comment snippet not by the current user."""
     me_lo = me.lower()
     candidates = []
     for comment in pr.get("comments", {}).get("nodes", []):
-        author = comment.get("author", {}).get("login", "")
+        author_obj = comment.get("author") or {}
+        author = author_obj.get("login", "")
         if author.lower() == me_lo:
             continue
-        if ignore_bots and _is_bot_login(author):
+        if ignore_bots and _is_bot_author_obj(author_obj):
             continue
         dt = _parse_dt(comment.get("createdAt"))
         candidates.append((dt, comment))
@@ -229,7 +241,7 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
     repo = pr["repository"]["nameWithOwner"]
     last_commit_dt = _latest_commit_dt(pr)
     review_state, review_author, review_body, review_at, has_unanswered_changes_requested = _analyze_reviews(
-        pr.get("reviews", {}).get("nodes", []), me, last_commit_dt
+        pr.get("reviews", {}).get("nodes", []), me, last_commit_dt, ignore_bots=ignore_bots
     )
 
     their_dt = _their_activity(pr, me, ignore_bots)
@@ -398,10 +410,11 @@ def _last_maintainer_comment(issue: dict, me: str, ignore_bots: bool) -> dict | 
     me_lo = me.lower()
     candidates = []
     for comment in issue.get("comments", {}).get("nodes", []):
-        author = comment.get("author", {}).get("login", "")
+        author_obj = comment.get("author") or {}
+        author = author_obj.get("login", "")
         if author.lower() == me_lo:
             continue
-        if ignore_bots and _is_bot_login(author):
+        if ignore_bots and _is_bot_author_obj(author_obj):
             continue
         if _is_maintainer(comment, repo):
             dt = _parse_dt(comment.get("createdAt"))

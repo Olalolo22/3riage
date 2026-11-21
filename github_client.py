@@ -26,14 +26,23 @@ ISSUE_REF_RE = re.compile(
 
 BOT_SUFFIXES = ("[bot]", "-bot", "_bot")
 
-# Standard CI, dependency management, and repository hygiene bots to ignore.
-# NOTE ON AI REVIEWERS (e.g. coderabbitai, copilot-pull-request-reviewer):
-# AI reviewers are INTENTIONALLY NOT blacklisted here by default.
-# For personal projects and learning workflows, automated reviewers act like
-# human mentors/tutors whose inline feedback and actionable reviews represent
-# real review debt you need to address.
-# If in the future you want to silence AI reviewers, add 'coderabbitai',
-# 'copilot-pull-request-reviewer', and 'sourcery-ai' here or make it configurable.
+# AI code reviewers are INTENTIONALLY NOT ignored by default, even though
+# GitHub GraphQL reports them with __typename == "Bot". Their inline comments
+# and reviews represent actionable review feedback to address.
+AI_REVIEWER_BOT_LOGINS = {
+    "coderabbitai",
+    "copilot-pull-request-reviewer",
+    "sourcery-ai",
+    "greptile-apps",
+    "ellipsis-dev",
+    "qodo-merge-pro",
+    "codiumai",
+    "bito-code-review",
+    "cubic-dev-ai",
+}
+
+# Fallback login list for automation/CI/deploy/bounty-status bots when GraphQL
+# __typename metadata is absent (e.g. REST payloads or minimal unit-test dicts).
 IGNORE_BOT_LOGINS = {
     "dependabot",
     "github-actions",
@@ -43,12 +52,38 @@ IGNORE_BOT_LOGINS = {
     "coveralls",
     "snyk-bot",
     "sonarcloud",
+    "drips-wave",
+    "vercel",
+    "netlify",
+    "cloudflare-workers-and-pages",
+    "changeset-bot",
+    "mergify",
+    "claassistant",
+    "linear",
+    "github-pages",
 }
 
 
 def _is_bot(login: str) -> bool:
     lo = login.lower()
-    return any(lo.endswith(s) for s in BOT_SUFFIXES) or lo in IGNORE_BOT_LOGINS
+    base = lo[:-5] if lo.endswith("[bot]") else lo
+    if base in AI_REVIEWER_BOT_LOGINS:
+        return False
+    return any(lo.endswith(s) for s in BOT_SUFFIXES) or base in IGNORE_BOT_LOGINS
+
+
+def _is_bot_author(author: dict | None) -> bool:
+    """Return True if a GraphQL Actor dict represents a non-AI-reviewer bot."""
+    if not author:
+        return False
+    login = (author.get("login") or "").strip()
+    lo = login.lower()
+    base = lo[:-5] if lo.endswith("[bot]") else lo
+    if base in AI_REVIEWER_BOT_LOGINS:
+        return False
+    if author.get("__typename") == "Bot":
+        return True
+    return _is_bot(login)
 
 
 class GitHubClient:
@@ -125,18 +160,18 @@ class GitHubClient:
               nodes { number repository { nameWithOwner } }
             }
             reviews(last: 10) {
-              nodes { author { login } state body submittedAt }
+              nodes { author { __typename login } state body submittedAt }
             }
             reviewThreads(first: 50) {
               nodes {
                 isResolved isOutdated
                 comments(last: 1) {
-                  nodes { author { login } body createdAt }
+                  nodes { author { __typename login } body createdAt }
                 }
               }
             }
             comments(last: 10) {
-              nodes { author { login } body createdAt }
+              nodes { author { __typename login } body createdAt }
             }
             commits(last: 1) {
               nodes { commit { committedDate } }
@@ -199,10 +234,10 @@ class GitHubClient:
           ... on Issue {
             number title url state
             repository { nameWithOwner }
-            author { login }
+            author { __typename login }
             assignees(first: 10) { nodes { login } }
             comments(last: 20) {
-              nodes { author { login } authorAssociation body createdAt }
+              nodes { author { __typename login } authorAssociation body createdAt }
             }
           }
         }

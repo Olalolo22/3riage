@@ -199,10 +199,33 @@ class TestPRBucketing(unittest.TestCase):
     def test_ai_reviewer_not_ignored(self):
         pr = self._base_pr()
         pr["comments"]["nodes"] = [
-            {"author": {"login": "coderabbitai"}, "body": "Nitpick: potential null pointer", "createdAt": _iso(H1_AGO)}
+            {"author": {"__typename": "Bot", "login": "coderabbitai"}, "body": "Nitpick: potential null pointer", "createdAt": _iso(H1_AGO)}
         ]
         res = core.bucket_pr(pr, "me", ignore_bots=True)
         self.assertEqual(res["bucket"], "NEEDS_YOU")
+
+    def test_graphql_github_app_bots_ignored(self):
+        for bot_login in ("drips-wave", "vercel", "some-random-ci-app"):
+            pr = self._base_pr()
+            pr["comments"]["nodes"] = [
+                {
+                    "author": {"__typename": "Bot", "login": bot_login},
+                    "body": "Automated status notification",
+                    "createdAt": _iso(H1_AGO),
+                }
+            ]
+            res = core.bucket_pr(pr, "me", ignore_bots=True)
+            self.assertEqual(res["bucket"], "WAITING_ON_THEM", f"{bot_login} should be ignored")
+            self.assertEqual(res["their_last_comment_author"], "")
+
+    def test_known_app_bots_ignored_without_typename(self):
+        for bot_login in ("drips-wave", "vercel"):
+            pr = self._base_pr()
+            pr["comments"]["nodes"] = [
+                {"author": {"login": bot_login}, "body": "Automated status", "createdAt": _iso(H1_AGO)}
+            ]
+            res = core.bucket_pr(pr, "me", ignore_bots=True)
+            self.assertEqual(res["bucket"], "WAITING_ON_THEM", f"{bot_login} should be ignored")
 
     def test_unresolved_review_thread_triggers_needs_you(self):
         pr = self._base_pr()
