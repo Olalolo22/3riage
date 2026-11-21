@@ -261,6 +261,18 @@ class TestPRBucketing(unittest.TestCase):
         res = core.bucket_pr(pr, "me", ignore_bots=True, min_age_hours=2.0)
         self.assertEqual(res["bucket"], "WAITING_ON_THEM")
 
+    def test_iso_timestamps_emitted(self):
+        pr = self._base_pr()
+        pr["comments"]["nodes"] = [
+            {"author": {"login": "maintainer"}, "body": "Checking now", "createdAt": _iso(H1_AGO)}
+        ]
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertIsNotNone(res["your_activity_at"])
+        self.assertIsNotNone(res["their_activity_at"])
+        self.assertIsNotNone(res["their_last_comment_at"])
+        self.assertTrue(res["your_activity_at"].endswith("Z"))
+        self.assertTrue(res["their_activity_at"].endswith("Z"))
+
 
 class TestIssueClassification(unittest.TestCase):
     def _base_issue(self):

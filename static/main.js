@@ -68,6 +68,50 @@
     return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
   }
 
+  function formatRelativeAge(isoTs, fallbackDays) {
+    if (isoTs) {
+      const dt = new Date(isoTs);
+      if (!Number.isNaN(dt.getTime())) {
+        const diffSec = Math.max(0, Math.floor((Date.now() - dt.getTime()) / 1000));
+        if (diffSec < 60) return 'just now';
+        if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+        if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+        const days = Math.floor(diffSec / 86400);
+        if (days < 30) return `${days}d ago`;
+        const sameYear = dt.getFullYear() === new Date().getFullYear();
+        return dt.toLocaleDateString(undefined, sameYear
+          ? { month: 'short', day: 'numeric' }
+          : { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+    }
+    if (fallbackDays === null || fallbackDays === undefined) return '';
+    if (fallbackDays === 0) return 'today';
+    return `${fallbackDays}d ago`;
+  }
+
+  function formatDetailTimestamp(isoTs, fallbackDays, emptyLabel = 'None recorded') {
+    if (isoTs) {
+      const dt = new Date(isoTs);
+      if (!Number.isNaN(dt.getTime())) {
+        const rel = formatRelativeAge(isoTs, fallbackDays);
+        const now = new Date();
+        const sameDay =
+          dt.getFullYear() === now.getFullYear() &&
+          dt.getMonth() === now.getMonth() &&
+          dt.getDate() === now.getDate();
+        const stamp = sameDay
+          ? dt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+          : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        const text = rel === stamp ? rel : `${rel} · ${stamp}`;
+        return { text, title: dt.toLocaleString() };
+      }
+    }
+    if (fallbackDays !== null && fallbackDays !== undefined) {
+      return { text: fallbackDays === 0 ? 'today' : `${fallbackDays}d ago`, title: '' };
+    }
+    return { text: emptyLabel, title: '' };
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle & Fetching
   // -------------------------------------------------------------------------
@@ -374,9 +418,11 @@
         if (item.review_state) {
           pillHtml += ` <span class="pill pill-muted">${escapeHtml(item.review_state)}</span>`;
         }
-        ageText = item.their_last_comment_days_ago != null
-          ? `${item.their_last_comment_days_ago}d ago`
-          : (item.your_activity_days_ago != null ? `${item.your_activity_days_ago}d ago` : '');
+        if (item.their_last_comment_at || item.their_last_comment_days_ago != null) {
+          ageText = formatRelativeAge(item.their_last_comment_at, item.their_last_comment_days_ago);
+        } else {
+          ageText = formatRelativeAge(item.your_activity_at, item.your_activity_days_ago);
+        }
       } else if (item.type === 'issue') {
         if (item.role === 'applied') {
           const appCount = item.applicant_count > 1 ? ` · ${item.applicant_count} apps` : '';
@@ -391,10 +437,10 @@
         if (item.forked) {
           pillHtml += ` <span class="pill pill-green">forked</span>`;
         }
-        ageText = item.days_since_my_comment != null ? `${item.days_since_my_comment}d ago` : '';
+        ageText = formatRelativeAge(item.my_last_comment_at, item.days_since_my_comment);
       } else if (item.type === 'claim') {
         pillHtml = `<span class="pill pill-purple">ready to claim</span>`;
-        ageText = `${item.merged_days_ago}d ago`;
+        ageText = formatRelativeAge(item.merged_at, item.merged_days_ago);
       }
 
       const safeId = escapeHtml(getItemId(item));
@@ -502,6 +548,9 @@
 
     const snippet = item.their_last_comment_body || item.review_body || '';
     const snippetAuthor = item.their_last_comment_author || item.review_author || 'maintainer';
+    const snippetAge = formatRelativeAge(item.their_last_comment_at, item.their_last_comment_days_ago);
+    const theirActivity = formatDetailTimestamp(item.their_activity_at, item.their_activity_days_ago, 'None recorded');
+    const yourActivity = formatDetailTimestamp(item.your_activity_at, item.your_activity_days_ago, 'None recorded');
     const itemUrl = safeUrl(item.url);
 
     detailContent.innerHTML = `
@@ -525,7 +574,7 @@
         <div class="detail-section">
           <div class="detail-section-title">Maintainer / Reviewer Snippet</div>
           <div class="feedback-quote">
-            <div class="feedback-meta">@${escapeHtml(snippetAuthor)} ${item.their_last_comment_days_ago != null ? `(${item.their_last_comment_days_ago}d ago)` : ''}:</div>
+            <div class="feedback-meta">@${escapeHtml(snippetAuthor)}${snippetAge ? ` (${escapeHtml(snippetAge)})` : ''}:</div>
             "${escapeHtml(snippet)}"
           </div>
         </div>
@@ -540,11 +589,11 @@
           </div>
           <div class="meta-item">
             <span class="meta-label">Their Last Activity</span>
-            <span class="meta-value">${item.their_activity_days_ago != null ? `${item.their_activity_days_ago} days ago` : 'None recorded'}</span>
+            <span class="meta-value"${theirActivity.title ? ` title="${escapeHtml(theirActivity.title)}"` : ''}>${escapeHtml(theirActivity.text)}</span>
           </div>
           <div class="meta-item">
             <span class="meta-label">Your Last Action</span>
-            <span class="meta-value">${item.your_activity_days_ago != null ? `${item.your_activity_days_ago} days ago` : 'None recorded'}</span>
+            <span class="meta-value"${yourActivity.title ? ` title="${escapeHtml(yourActivity.title)}"` : ''}>${escapeHtml(yourActivity.text)}</span>
           </div>
           <div class="meta-item">
             <span class="meta-label">Draft Status</span>
@@ -574,6 +623,8 @@
     const forkReport = (triageData.fork_report || []).find(f => f.repo.toLowerCase() === item.repo.toLowerCase());
     const needsFork = forkReport ? forkReport.needs_fork : !item.forked;
     const itemUrl = safeUrl(item.url);
+    const maintainerAge = formatRelativeAge(item.maintainer_comment_at, item.maintainer_comment_days_ago);
+    const myCommentTs = formatDetailTimestamp(item.my_last_comment_at, item.days_since_my_comment, 'None');
 
     let forkActionHtml = '';
     if (needsFork) {
@@ -606,7 +657,7 @@
         <div class="detail-section">
           <div class="detail-section-title">Maintainer Guidance (@${escapeHtml(item.maintainer_comment_author)})</div>
           <div class="feedback-quote">
-            <div class="feedback-meta">Maintainer ${item.maintainer_comment_days_ago != null ? `(${item.maintainer_comment_days_ago}d ago)` : ''}:</div>
+            <div class="feedback-meta">Maintainer${maintainerAge ? ` (${escapeHtml(maintainerAge)})` : ''}:</div>
             "${escapeHtml(item.maintainer_comment_body)}"
           </div>
         </div>
@@ -625,7 +676,7 @@
           </div>
           <div class="meta-item">
             <span class="meta-label">Your Last Comment</span>
-            <span class="meta-value">${item.days_since_my_comment != null ? `${item.days_since_my_comment} days ago` : 'None'}</span>
+            <span class="meta-value"${myCommentTs.title ? ` title="${escapeHtml(myCommentTs.title)}"` : ''}>${escapeHtml(myCommentTs.text)}</span>
           </div>
           <div class="meta-item">
             <span class="meta-label">Fork Status</span>
@@ -645,6 +696,7 @@
 
   function renderClaimDetail(item) {
     const itemUrl = safeUrl(item.url);
+    const mergedWhen = formatRelativeAge(item.merged_at, item.merged_days_ago) || 'recently';
 
     detailContent.innerHTML = `
       <div class="detail-header">
@@ -660,7 +712,7 @@
 
       <div class="decision-card border-purple">
         <div class="decision-header">${uiIcon('award', 'icon-purple', 15)} Merged: Ready to Claim Bounty / Points</div>
-        <div class="decision-subtext">This pull request merged ${item.merged_days_ago} days ago. Submit this link in your community Discord or Wave channel to claim rewards.</div>
+        <div class="decision-subtext">This pull request merged ${escapeHtml(mergedWhen)}. Submit this link in your community Discord or Wave channel to claim rewards.</div>
       </div>
 
       <div class="detail-section">

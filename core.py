@@ -43,6 +43,12 @@ def _days_ago(dt: datetime | None) -> int | None:
     return delta.days
 
 
+def _iso_utc(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).strftime(_DT_FMT)
+
+
 def _snippet(text: str | None, length: int = 120) -> str:
     if not text:
         return ""
@@ -274,7 +280,7 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
     snippet_body = ""
     snippet_when = None
     if last_comment:
-        snippet_author = last_comment.get("author", {}).get("login", "")
+        snippet_author = (last_comment.get("author") or {}).get("login", "")
         snippet_body = _snippet(last_comment.get("body", ""))
         snippet_when = _parse_dt(last_comment.get("createdAt"))
 
@@ -292,8 +298,11 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
         "their_last_comment_author": snippet_author,
         "their_last_comment_body": snippet_body,
         "their_last_comment_days_ago": _days_ago(snippet_when),
+        "their_last_comment_at": _iso_utc(snippet_when),
         "their_activity_days_ago": _days_ago(their_dt),
+        "their_activity_at": _iso_utc(their_dt),
         "your_activity_days_ago": _days_ago(your_dt),
+        "your_activity_at": _iso_utc(your_dt),
     }
 
 
@@ -391,17 +400,21 @@ def _analyze_issue_role_and_applications(issue: dict, me: str) -> tuple[str, boo
     return "mentioned", False, applicant_count, applicant_list
 
 
+def _my_last_comment_dt(issue: dict, me: str) -> datetime | None:
+    """Timestamp of the current user's latest comment on an issue."""
+    me_lo = me.lower()
+    dts = []
+    for c in issue.get("comments", {}).get("nodes", []):
+        if (c.get("author") or {}).get("login", "").lower() == me_lo:
+            dt = _parse_dt(c.get("createdAt"))
+            if dt:
+                dts.append(dt)
+    return max(dts) if dts else None
+
+
 def _days_since_my_comment(issue: dict, me: str) -> int | None:
     """Days since the current user last commented on an issue."""
-    me_lo = me.lower()
-    my_comments = [
-        c for c in issue.get("comments", {}).get("nodes", [])
-        if c.get("author", {}).get("login", "").lower() == me_lo
-    ]
-    if not my_comments:
-        return None
-    last = max(_parse_dt(c["createdAt"]) for c in my_comments if _parse_dt(c["createdAt"]))
-    return _days_ago(last)
+    return _days_ago(_my_last_comment_dt(issue, me))
 
 
 def _last_maintainer_comment(issue: dict, me: str, ignore_bots: bool) -> dict | None:
@@ -439,13 +452,16 @@ def classify_issue(issue: dict, me: str, ignore_bots: bool, linked: set, forked_
     maintainer_comment = _last_maintainer_comment(issue, me, ignore_bots)
     m_author = ""
     m_body = ""
-    m_days = None
+    m_dt = None
     if maintainer_comment:
-        m_author = maintainer_comment.get("author", {}).get("login", "")
+        m_author = (maintainer_comment.get("author") or {}).get("login", "")
         m_body = _snippet(maintainer_comment.get("body", ""))
-        m_days = _days_ago(_parse_dt(maintainer_comment.get("createdAt")))
+        m_dt = _parse_dt(maintainer_comment.get("createdAt"))
+    m_days = _days_ago(m_dt)
+    m_iso = _iso_utc(m_dt)
 
-    my_last_days = _days_since_my_comment(issue, me)
+    my_last_dt = _my_last_comment_dt(issue, me)
+    my_last_days = _days_ago(my_last_dt)
 
     return {
         "type": "issue",
@@ -458,13 +474,16 @@ def classify_issue(issue: dict, me: str, ignore_bots: bool, linked: set, forked_
         "applicant_count": applicant_count,
         "applicant_list": applicant_list,
         "days_since_my_comment": my_last_days,
+        "my_last_comment_at": _iso_utc(my_last_dt),
         "forked": repo.lower() in forked_parents,
         "maintainer_comment_author": m_author,
         "maintainer_comment_body": m_body,
         "maintainer_comment_days_ago": m_days,
+        "maintainer_comment_at": m_iso,
         "last_comment_author": m_author,  # backwards compatibility
         "last_comment_body": m_body,
         "last_comment_days_ago": m_days,
+        "last_comment_at": m_iso,
         "classify": classify(m_body),  # stub
     }
 
@@ -491,6 +510,7 @@ def build_claims_shelf(merged_prs: list[dict], days: int = 14) -> list[dict]:
                 "title": pr["title"],
                 "url": pr.get("url", ""),
                 "merged_days_ago": _days_ago(merged_at),
+                "merged_at": _iso_utc(merged_at),
             }
         )
     return results

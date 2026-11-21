@@ -52,7 +52,23 @@ def _c(text: str, *codes: str) -> str:
     return "".join(codes) + text + RESET
 
 
-def _age_badge(days: int | None) -> str:
+from datetime import datetime, timezone
+
+
+def _age_badge(days: int | None, iso_ts: str | None = None) -> str:
+    if iso_ts:
+        try:
+            dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+            secs = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+            if secs < 60:
+                return _c("just now", GREEN)
+            if secs < 3600:
+                return _c(f"{int(secs // 60)}m", GREEN)
+            if secs < 86400:
+                return _c(f"{int(secs // 3600)}h", GREEN)
+            days = int(secs // 86400)
+        except ValueError:
+            pass
     if days is None:
         return _c("?d", DIM)
     if days == 0:
@@ -117,7 +133,7 @@ def _print_pr_bucket(bucket_name: str, items: list[dict], color: str) -> None:
         # Last comment snippet
         if pr.get("their_last_comment_body"):
             who = f"@{pr['their_last_comment_author']}" if pr.get("their_last_comment_author") else "them"
-            age = _age_badge(pr.get("their_last_comment_days_ago"))
+            age = _age_badge(pr.get("their_last_comment_days_ago"), pr.get("their_last_comment_at"))
             click.echo(
                 _c(f"    Last: {who}", style + MAGENTA)
                 + " " + age + "  "
@@ -155,8 +171,8 @@ def _print_issues(issues: list[dict]) -> None:
         else:
             role_display = i["role"]
 
-        age_my = _age_badge(i.get("days_since_my_comment"))
-        age_them = _age_badge(i.get("maintainer_comment_days_ago"))
+        age_my = _age_badge(i.get("days_since_my_comment"), i.get("my_last_comment_at"))
+        age_them = _age_badge(i.get("maintainer_comment_days_ago"), i.get("maintainer_comment_at"))
         forked = _c("✓", GREEN) if i.get("forked") else _c("✗", RED)
 
         rows.append(
@@ -184,7 +200,7 @@ def _print_issues(issues: list[dict]) -> None:
 
         if i.get("maintainer_comment_body"):
             who = f"Maintainer @{i['maintainer_comment_author']}"
-            age = _age_badge(i.get("maintainer_comment_days_ago"))
+            age = _age_badge(i.get("maintainer_comment_days_ago"), i.get("maintainer_comment_at"))
             click.echo(_c(f"  ↳ {who} ({age}): \"{i['maintainer_comment_body']}\"", style + WHITE))
 
         if i.get("role") == "applied":
@@ -206,7 +222,7 @@ def _print_claims(claims: list[dict]) -> None:
         return
 
     for c in claims:
-        age = _age_badge(c.get("merged_days_ago"))
+        age = _age_badge(c.get("merged_days_ago"), c.get("merged_at"))
         click.echo()
         click.echo(
             _c(f"  [{c['repo']} #{c['number']}]", CYAN)

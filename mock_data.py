@@ -10,7 +10,15 @@ Matches the exact schema of core.run_triage():
 All repos, usernames, and amounts are completely fictional.
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+
+def _mock_iso(now: datetime, days: int | None, extra_hours: float = 0.0) -> str | None:
+    if days is None:
+        return None
+    dt = now - timedelta(days=days, hours=extra_hours)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def get_mock_triage_data() -> dict[str, Any]:
@@ -515,6 +523,25 @@ def get_mock_triage_data() -> dict[str, Any]:
             "needs_fork": False,
         },
     ]
+
+    now = datetime.now(timezone.utc)
+
+    for bucket_items in (prs_needs_you, prs_waiting_on_them, prs_probably_fine):
+        for idx, item in enumerate(bucket_items):
+            offset_h = (idx * 2 + 1) % 7
+            item["their_last_comment_at"] = _mock_iso(now, item.get("their_last_comment_days_ago"), offset_h)
+            item["their_activity_at"] = _mock_iso(now, item.get("their_activity_days_ago"), offset_h)
+            item["your_activity_at"] = _mock_iso(now, item.get("your_activity_days_ago"), (offset_h + 2) % 9)
+
+    for idx, issue in enumerate(unlinked_issues):
+        offset_h = (idx * 3 + 1) % 8
+        issue["my_last_comment_at"] = _mock_iso(now, issue.get("days_since_my_comment"), offset_h)
+        m_iso = _mock_iso(now, issue.get("maintainer_comment_days_ago"), (offset_h + 1) % 6)
+        issue["maintainer_comment_at"] = m_iso
+        issue["last_comment_at"] = m_iso
+
+    for idx, claim in enumerate(claims):
+        claim["merged_at"] = _mock_iso(now, claim.get("merged_days_ago"), (idx * 2 + 1) % 9)
 
     return {
         "username": "demo-contributor",
