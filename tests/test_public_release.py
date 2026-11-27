@@ -414,6 +414,97 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         self.assertEqual(data["summary"]["ready_to_claim"], 1)
         self.assertEqual(data["claims"][0]["repo"], "ext-org/ext-repo")
 
+    def test_graphql_queries_fetch_link_bot_and_ci_fields(self):
+        pr_q = GitHubClient._PR_QUERY
+        for field in ("baseRefName", "headRefName", "isCrossRepository", "authorAssociation",
+                      "defaultBranchRef", "closingIssuesReferences", "statusCheckRollup",
+                      "totalCount", "... on CheckRun", "... on StatusContext",
+                      "reviewThreads", "isOutdated"):
+            self.assertIn(field, pr_q, field)
+        merged_q = GitHubClient._MERGED_PR_QUERY
+        for field in ("closingIssuesReferences", "baseRefName", "defaultBranchRef", "body"):
+            self.assertIn(field, merged_q, field)
+
+    def test_open_pr_query_falls_back_without_ci_on_graphql_error(self):
+        client = GitHubClient(token="t", username="octocat")
+        self.assertNotIn("statusCheckRollup", GitHubClient._PR_QUERY_NO_CI)
+        self.assertNotIn("__CI_FIELDS__", GitHubClient._PR_QUERY)
+        page = {"user": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+            "nodes": [{"number": 1, "isDraft": False}],
+        }}}
+        calls = []
+
+        def fake_gql(query, variables):
+            calls.append(query)
+            if "statusCheckRollup" in query:
+                raise RuntimeError("GraphQL errors: Resource not accessible by integration")
+            return page
+
+        with patch.object(client, "_gql", side_effect=fake_gql):
+            prs = client.get_open_prs()
+        self.assertEqual(len(prs), 1)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("statusCheckRollup", calls[1])
+
+    def test_open_pr_query_raises_unrelated_errors(self):
+        client = GitHubClient(token="t", username="octocat")
+        with patch.object(client, "_gql", side_effect=RuntimeError("GraphQL errors: bad login")):
+            with self.assertRaises(RuntimeError):
+                client.get_open_prs()
+
+    def test_run_triage_suggests_assigned_issue_and_flags_merged_risk(self):
+        from datetime import datetime, timezone, timedelta
+        from core import run_triage
+
+        now = datetime.now(timezone.utc)
+        iso = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        fake_client = MagicMock()
+        fake_client.username = "contrib"
+        fake_client.extract_issue_refs_from_body = GitHubClient.extract_issue_refs_from_body
+        base_repo = {"nameWithOwner": "org/app", "defaultBranchRef": {"name": "main"}}
+        fake_client.get_open_prs.return_value = [
+            {
+                "number": 30, "title": "Ticker bound", "url": "u30", "isDraft": False,
+                "repository": base_repo, "baseRefName": "main", "headRefName": "ticker",
+                "body": "", "closingIssuesReferences": {"nodes": []},
+                "reviews": {"nodes": []}, "reviewThreads": {"nodes": []}, "comments": {"nodes": []},
+                "commits": {"nodes": [{"commit": {"committedDate": iso(now - timedelta(hours=2))}}]},
+            },
+            {
+                "number": 31, "title": "Own repo", "url": "u31", "isDraft": False,
+                "repository": {"nameWithOwner": "contrib/tool", "defaultBranchRef": {"name": "main"}},
+                "baseRefName": "main", "body": "", "closingIssuesReferences": {"nodes": []},
+                "reviews": {"nodes": []}, "reviewThreads": {"nodes": []}, "comments": {"nodes": []},
+                "commits": {"nodes": [{"commit": {"committedDate": iso(now)}}]},
+            },
+        ]
+        fake_client.get_merged_prs.return_value = [
+            {
+                "number": 7, "title": "Merged unlinked", "url": "u7", "mergedAt": iso(now - timedelta(days=1)),
+                "repository": base_repo, "baseRefName": "main", "body": "",
+                "closingIssuesReferences": {"nodes": []},
+            },
+        ]
+        fake_client.get_involved_issues.return_value = [
+            {
+                "number": 711, "title": "Bind ticker", "url": "i711", "state": "OPEN",
+                "repository": {"nameWithOwner": "org/app"}, "author": {"login": "maint"},
+                "assignees": {"nodes": [{"login": "contrib"}]}, "comments": {"nodes": []},
+            },
+        ]
+        fake_client.get_forked_parents.return_value = set()
+        fake_client.get_write_access_repos.return_value = set()
+
+        data = run_triage(fake_client)
+        prs = {p["number"]: p for items in data["prs"].values() for p in items}
+        self.assertEqual(prs[30]["suggested_close_issues"], [711])
+        self.assertEqual(prs[30]["suggestion_confidence"], "strong")
+        self.assertTrue(data["claims"][0]["points_at_risk"])
+        # Own-repo PR without a link is not counted as a problem.
+        self.assertEqual(data["summary"]["unlinked_prs"], 1)
+        self.assertEqual(data["summary"]["points_at_risk"], 1)
+
     def test_github_client_thread_local_sessions(self):
         from concurrent.futures import ThreadPoolExecutor
 

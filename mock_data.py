@@ -21,6 +21,98 @@ def _mock_iso(now: datetime, days: int | None, extra_hours: float = 0.0) -> str 
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _ci(state: str, passed: int, failed: int = 0, pending: int = 0) -> dict[str, Any]:
+    return {
+        "ci_state": state,
+        "ci_passed": passed,
+        "ci_failed": failed,
+        "ci_pending": pending,
+        "ci_total": passed + failed + pending,
+        "ci_partial": False,
+    }
+
+
+def _pr_defaults(item: dict[str, Any]) -> dict[str, Any]:
+    """Fields added for linked-issue, review-bot and CI checks (schema-synced with core.bucket_pr)."""
+    return {
+        "has_closing_link": True,
+        "linked_issues": [f"#{max(1, item['number'] - 9)}"],
+        "closing_link_reason": None,
+        "base_branch": "main",
+        "default_branch": "main",
+        "targets_default_branch": True,
+        "suggested_close_issues": [],
+        "suggestion_confidence": None,
+        "bot_review_actionable": False,
+        "bot_review_author": "",
+        "bot_review_reason": None,
+        "bot_review_body": "",
+        "bot_review_days_ago": None,
+        "bot_review_at": None,
+        "bot_feedback": None,
+        **_ci("SUCCESS", 6),
+    }
+
+
+# Curated demo cases, keyed by (repo, number). Each one showcases a feature.
+_PR_OVERRIDES: dict[tuple[str, int], dict[str, Any]] = {
+    # Missing `Closes #N`, and the only assigned issue in the repo is #97 -> strong suggestion.
+    ("nexus-mesh/relayer-node", 215): {
+        "has_closing_link": False,
+        "linked_issues": [],
+        "closing_link_reason": "missing_keyword",
+        "suggested_close_issues": [97],
+        "suggestion_confidence": "strong",
+        **_ci("SUCCESS", 8),
+    },
+    # Reviewer mentions ARM64 CI failure -> red CI.
+    ("hyperion-zk/circuit-std", 54): _ci("FAILURE", 7, failed=2),
+    # Custom review bot requested changes after the last push.
+    ("stellar-vault/liquidity-engine", 330): {
+        "review_state": "CHANGES_REQUESTED",
+        "review_author": "vault-guard",
+        "review_body": "Missing invariant test for the flash loan repayment path. Add it before merge.",
+        "their_last_comment_author": "vault-guard",
+        "their_last_comment_body": "Missing invariant test for the flash loan repayment path. Add it before merge.",
+        "bot_review_actionable": True,
+        "bot_review_author": "vault-guard",
+        "bot_review_reason": "changes_requested",
+        "bot_review_body": "Missing invariant test for the flash loan repayment path. Add it before merge.",
+        "bot_review_days_ago": 2,
+        **_ci("SUCCESS", 5),
+    },
+    # Targets a release branch, so GitHub ignores the closing keyword.
+    ("solstice-network/settlement-core", 149): {
+        "has_closing_link": False,
+        "linked_issues": [],
+        "closing_link_reason": "non_default_base",
+        "base_branch": "release/v0.9",
+        "targets_default_branch": False,
+    },
+    # Body says "Fixes #1081" but no such issue -> keyword not linked.
+    ("aether-stream/contracts", 94): {
+        "has_closing_link": False,
+        "linked_issues": [],
+        "closing_link_reason": "keyword_not_linked",
+        **_ci("NONE", 0),
+    },
+    # First-time contributor fork: checks haven't run yet.
+    ("nexus-mesh/relayer-node", 221): _ci("AWAITING_APPROVAL", 0),
+    # Unknown bot left a comment after the last push -> soft hint, bucket unchanged.
+    ("chronos-protocol/time-oracle", 102): {
+        "bot_feedback": {
+            "login": "gas-reporter",
+            "body": "Gas usage on settle() increased by 4.2% compared to main.",
+            "days_ago": 1,
+        },
+        **_ci("PENDING", 4, pending=3),
+    },
+}
+
+# Merged PRs with no linked issue: points may not settle automatically.
+_CLAIMS_AT_RISK = {("nexus-mesh/relayer-node", 212), ("aether-stream/contracts", 76)}
+
+
 def get_mock_triage_data() -> dict[str, Any]:
     prs_needs_you = [
         {
@@ -532,6 +624,14 @@ def get_mock_triage_data() -> dict[str, Any]:
             item["their_last_comment_at"] = _mock_iso(now, item.get("their_last_comment_days_ago"), offset_h)
             item["their_activity_at"] = _mock_iso(now, item.get("their_activity_days_ago"), offset_h)
             item["your_activity_at"] = _mock_iso(now, item.get("your_activity_days_ago"), (offset_h + 2) % 9)
+            item.update(_pr_defaults(item))
+            item.update(_PR_OVERRIDES.get((item["repo"], item["number"]), {}))
+            item["bot_review_at"] = _mock_iso(now, item.get("bot_review_days_ago"), offset_h)
+            if item.get("bot_feedback"):
+                item["bot_feedback"] = {
+                    **item["bot_feedback"],
+                    "at": _mock_iso(now, item["bot_feedback"].get("days_ago"), 3),
+                }
 
     for idx, issue in enumerate(unlinked_issues):
         offset_h = (idx * 3 + 1) % 8
@@ -542,6 +642,18 @@ def get_mock_triage_data() -> dict[str, Any]:
 
     for idx, claim in enumerate(claims):
         claim["merged_at"] = _mock_iso(now, claim.get("merged_days_ago"), (idx * 2 + 1) % 9)
+        at_risk = (claim["repo"], claim["number"]) in _CLAIMS_AT_RISK
+        claim.update({
+            "has_closing_link": not at_risk,
+            "linked_issues": [] if at_risk else [f"#{max(1, claim['number'] - 9)}"],
+            "closing_link_reason": "missing_keyword" if at_risk else None,
+            "base_branch": "main",
+            "default_branch": "main",
+            "targets_default_branch": True,
+            "points_at_risk": at_risk,
+        })
+
+    all_prs = prs_needs_you + prs_waiting_on_them + prs_probably_fine
 
     return {
         "username": "demo-contributor",
@@ -560,5 +672,7 @@ def get_mock_triage_data() -> dict[str, Any]:
             "unlinked_issues": len(unlinked_issues),
             "ready_to_claim": len(claims),
             "repos_need_fork": 1,
+            "unlinked_prs": sum(1 for p in all_prs if p["has_closing_link"] is False),
+            "points_at_risk": sum(1 for c in claims if c["points_at_risk"]),
         },
     }

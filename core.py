@@ -66,6 +66,303 @@ def classify(comment: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Linked-issue detection (closing keywords / Development sidebar links)
+# ---------------------------------------------------------------------------
+
+# GitHub closing keywords: close/closes/closed, fix/fixes/fixed, resolve/resolves/resolved,
+# optionally followed by a colon, then #N, owner/repo#N, or a full issue URL.
+_CLOSING_KEYWORD_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+"
+    r"(?:https://github\.com/[\w.\-]+/[\w.\-]+/issues/\d+|(?:[\w.\-]+/[\w.\-]+)?#\d+)",
+    re.IGNORECASE,
+)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _has_closing_keyword(body: str | None) -> bool:
+    """True if the PR body (ignoring HTML comments) contains a GitHub closing keyword."""
+    if not body:
+        return False
+    return bool(_CLOSING_KEYWORD_RE.search(_HTML_COMMENT_RE.sub("", body)))
+
+
+def _closing_link_info(pr: dict) -> dict:
+    """
+    Describe whether GitHub has linked this PR to an issue it will close.
+
+    closingIssuesReferences is the source of truth: it covers both closing keywords
+    and issues linked by hand from the PR's Development sidebar.
+    If the field was not fetched at all, everything is reported as unknown (None)
+    so callers never raise a false alarm.
+    """
+    repo = (pr.get("repository") or {}).get("nameWithOwner", "")
+    default_branch = ((pr.get("repository") or {}).get("defaultBranchRef") or {}).get("name")
+    base = pr.get("baseRefName")
+    targets_default = (base == default_branch) if (base and default_branch) else None
+
+    if "closingIssuesReferences" not in pr:
+        return {
+            "has_closing_link": None,
+            "linked_issues": [],
+            "closing_link_reason": None,
+            "base_branch": base,
+            "default_branch": default_branch,
+            "targets_default_branch": targets_default,
+        }
+
+    refs = (pr.get("closingIssuesReferences") or {}).get("nodes", []) or []
+    linked: list[str] = []
+    for ref in refs:
+        ref_repo = (ref.get("repository") or {}).get("nameWithOwner", "")
+        num = ref.get("number")
+        if num is None:
+            continue
+        linked.append(f"#{num}" if ref_repo.lower() == repo.lower() else f"{ref_repo}#{num}")
+
+    has_link = bool(linked)
+    reason = None
+    if not has_link:
+        if targets_default is False:
+            reason = "non_default_base"
+        elif _has_closing_keyword(pr.get("body")):
+            reason = "keyword_not_linked"
+        else:
+            reason = "missing_keyword"
+
+    return {
+        "has_closing_link": has_link,
+        "linked_issues": linked,
+        "closing_link_reason": reason,
+        "base_branch": base,
+        "default_branch": default_branch,
+        "targets_default_branch": targets_default,
+    }
+
+
+def _number_mentioned(num: int, text: str | None) -> bool:
+    if not text:
+        return False
+    return re.search(rf"(?<!\d){num}(?!\d)", text) is not None
+
+
+def _suggest_close_issues(pr: dict, candidates: list[int]) -> tuple[list[int], str | None]:
+    """
+    Order assigned-issue candidates for a PR missing its closing link.
+    Returns (suggested_numbers, confidence) where confidence is
+    'strong' (one clear answer), 'ambiguous' (several, user must pick) or None.
+    """
+    if not candidates:
+        return [], None
+    candidates = sorted(set(candidates))
+    repo = (pr.get("repository") or {}).get("nameWithOwner", "")
+    body_refs = {
+        n for (r, n) in GitHubClient.extract_issue_refs_from_body(pr.get("body") or "", repo)
+        if r.lower() == repo.lower()
+    }
+    matched = [
+        n for n in candidates
+        if n in body_refs
+        or _number_mentioned(n, pr.get("headRefName"))
+        or re.search(rf"#{n}(?!\d)", pr.get("title") or "")
+    ]
+    ordered = matched + [n for n in candidates if n not in matched]
+    if len(candidates) == 1 or len(matched) == 1:
+        return ordered, "strong"
+    return ordered, "ambiguous"
+
+
+# ---------------------------------------------------------------------------
+# Review bots that leave actionable feedback
+# ---------------------------------------------------------------------------
+
+def _bot_base_login(login: str) -> str:
+    lo = (login or "").lower()
+    return lo[:-5] if lo.endswith("[bot]") else lo
+
+
+def _is_status_bot(author: dict | None) -> bool:
+    """Known automation/deploy/status bots whose comments are never feedback."""
+    from github_client import IGNORE_BOT_LOGINS
+    return _bot_base_login((author or {}).get("login", "")) in IGNORE_BOT_LOGINS
+
+
+def _newer_than(dt: datetime | None, ref: datetime | None) -> bool:
+    if dt is None:
+        return False
+    return ref is None or dt > ref
+
+
+def _actionable_bot_review(pr: dict, me: str, last_commit_dt: datetime | None) -> dict | None:
+    """
+    Feedback from a bot that the normal bot filter would hide, but that asks for work:
+      - a formal CHANGES_REQUESTED review newer than your last commit, not later
+        superseded by APPROVED or DISMISSED from the same bot, or
+      - an unresolved, non-outdated review thread whose latest comment is from a bot
+        and newer than your last commit.
+    Returns {login, reason, at, body} for the most recent one, or None.
+    """
+    me_lo = me.lower()
+    found: list[tuple[datetime, dict]] = []
+
+    latest_decision: dict[str, dict] = {}
+    for r in pr.get("reviews", {}).get("nodes", []):
+        author = r.get("author") or {}
+        login = author.get("login", "")
+        if not login or login.lower() == me_lo or not _is_bot_author_obj(author):
+            continue
+        if r.get("state") not in ("CHANGES_REQUESTED", "APPROVED", "DISMISSED"):
+            continue
+        key = _bot_base_login(login)
+        prev = latest_decision.get(key)
+        sub = _parse_dt(r.get("submittedAt"))
+        if not prev or (sub and sub > (_parse_dt(prev.get("submittedAt")) or datetime.min.replace(tzinfo=timezone.utc))):
+            latest_decision[key] = r
+    for r in latest_decision.values():
+        sub = _parse_dt(r.get("submittedAt"))
+        if r.get("state") == "CHANGES_REQUESTED" and _newer_than(sub, last_commit_dt):
+            found.append((sub, {
+                "login": (r.get("author") or {}).get("login", ""),
+                "reason": "changes_requested",
+                "body": _snippet(r.get("body")),
+            }))
+
+    for thread in pr.get("reviewThreads", {}).get("nodes", []):
+        if thread.get("isResolved") or thread.get("isOutdated"):
+            continue
+        nodes = thread.get("comments", {}).get("nodes", [])
+        if not nodes:
+            continue
+        last = nodes[-1]
+        author = last.get("author") or {}
+        login = author.get("login", "")
+        if not login or login.lower() == me_lo or not _is_bot_author_obj(author):
+            continue
+        created = _parse_dt(last.get("createdAt"))
+        if _newer_than(created, last_commit_dt):
+            found.append((created, {"login": login, "reason": "review_thread", "body": _snippet(last.get("body"))}))
+
+    if not found:
+        return None
+    at, info = max(found, key=lambda x: x[0])
+    info["at"] = at
+    return info
+
+
+def _bot_feedback_hint(pr: dict, me: str, last_commit_dt: datetime | None) -> dict | None:
+    """
+    Soft hint: the latest top-level comment from a bot that is neither a known status bot
+    nor an AI reviewer (those already count), posted after your last commit.
+    Never changes the bucket.
+    """
+    me_lo = me.lower()
+    best: tuple[datetime, dict] | None = None
+    for c in pr.get("comments", {}).get("nodes", []):
+        author = c.get("author") or {}
+        login = author.get("login", "")
+        if not login or login.lower() == me_lo:
+            continue
+        if not _is_bot_author_obj(author) or _is_status_bot(author):
+            continue
+        created = _parse_dt(c.get("createdAt"))
+        if not _newer_than(created, last_commit_dt):
+            continue
+        if best is None or created > best[0]:
+            best = (created, c)
+    if best is None:
+        return None
+    created, c = best
+    return {
+        "login": (c.get("author") or {}).get("login", ""),
+        "body": _snippet(c.get("body")),
+        "at": _iso_utc(created),
+        "days_ago": _days_ago(created),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CI checks on the head commit
+# ---------------------------------------------------------------------------
+
+_CI_PASS = {"SUCCESS"}
+_CI_FAIL = {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "STARTUP_FAILURE"}
+_CI_EXCLUDED = {"SKIPPED", "NEUTRAL"}
+_FIRST_TIMER_ASSOCIATIONS = {"FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE"}
+
+
+def _ci_summary(pr: dict) -> dict:
+    """
+    Count CI results on the PR's head commit.
+    ci_state: SUCCESS | FAILURE | PENDING | NONE | AWAITING_APPROVAL
+    AWAITING_APPROVAL means checks have not run, most likely because a maintainer
+    must approve workflows for a first-time contributor's fork PR.
+    """
+    commit_nodes = pr.get("commits", {}).get("nodes", [])
+    head = (commit_nodes[-1].get("commit") or {}) if commit_nodes else {}
+    if "statusCheckRollup" not in head:
+        # CI was not fetched (e.g. token not allowed to read checks): unknown, hide it.
+        return {
+            "ci_state": None, "ci_passed": None, "ci_failed": None,
+            "ci_pending": None, "ci_total": None, "ci_partial": False,
+        }
+    rollup = head.get("statusCheckRollup")
+
+    passed = failed = pending = waiting = 0
+    total_count = 0
+    if rollup:
+        contexts = rollup.get("contexts") or {}
+        total_count = contexts.get("totalCount") or 0
+        for node in contexts.get("nodes", []) or []:
+            is_status_context = node.get("__typename") == "StatusContext" or (
+                "state" in node and "conclusion" not in node and "status" not in node
+            )
+            if not is_status_context:  # CheckRun
+                conclusion = (node.get("conclusion") or "").upper()
+                if conclusion in _CI_EXCLUDED:
+                    continue
+                if conclusion in _CI_PASS:
+                    passed += 1
+                elif conclusion in _CI_FAIL:
+                    failed += 1
+                elif conclusion == "ACTION_REQUIRED":
+                    waiting += 1
+                else:  # not completed yet, or STALE
+                    pending += 1
+            else:  # StatusContext
+                state = (node.get("state") or "").upper()
+                if state in _CI_PASS:
+                    passed += 1
+                elif state in ("FAILURE", "ERROR"):
+                    failed += 1
+                else:
+                    pending += 1
+
+    total = passed + failed + pending + waiting
+    first_timer_fork = bool(pr.get("isCrossRepository")) and (
+        (pr.get("authorAssociation") or "").upper() in _FIRST_TIMER_ASSOCIATIONS
+    )
+
+    if total == 0:
+        state = "AWAITING_APPROVAL" if first_timer_fork else "NONE"
+    elif failed:
+        state = "FAILURE"
+    elif waiting and not passed and not pending:
+        state = "AWAITING_APPROVAL"
+    elif pending or waiting:
+        state = "PENDING"
+    else:
+        state = "SUCCESS"
+
+    return {
+        "ci_state": state,
+        "ci_passed": passed,
+        "ci_failed": failed,
+        "ci_pending": pending + waiting,
+        "ci_total": total,
+        "ci_partial": total_count > len(((rollup or {}).get("contexts") or {}).get("nodes", []) or []),
+    }
+
+
+# ---------------------------------------------------------------------------
 # PR bucket logic
 # ---------------------------------------------------------------------------
 
@@ -237,10 +534,20 @@ def _last_their_comment(pr: dict, me: str, ignore_bots: bool) -> dict | None:
     return comment
 
 
-def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) -> dict:
+def bucket_pr(
+    pr: dict,
+    me: str,
+    ignore_bots: bool,
+    min_age_hours: float = 0,
+    assigned_issue_candidates: list[int] | None = None,
+) -> dict:
     """
     Classify a single open PR into one of three buckets:
       NEEDS_YOU | WAITING_ON_THEM | PROBABLY_FINE
+
+    assigned_issue_candidates: open issues in the same repo assigned to you and not
+    already claimed by another of your PRs. Used to suggest a `Closes #N` line when
+    this PR has no linked issue.
 
     Returns a structured dict ready for serialisation.
     """
@@ -253,6 +560,12 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
     their_dt = _their_activity(pr, me, ignore_bots)
     your_dt = _your_activity(pr, me)
 
+    # Bots hidden by the normal filter still count when they ask for work after your last push.
+    bot_review = _actionable_bot_review(pr, me, last_commit_dt) if ignore_bots else None
+    bot_feedback = _bot_feedback_hint(pr, me, last_commit_dt) if ignore_bots else None
+    if bot_review and bot_feedback and bot_feedback["login"].lower() == bot_review["login"].lower():
+        bot_feedback = None
+
     # Filter out activity younger than min_age_hours if requested
     if min_age_hours > 0 and their_dt:
         age_hours = (datetime.now(timezone.utc) - their_dt).total_seconds() / 3600.0
@@ -262,6 +575,12 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
     # --- Bucket decision ---
     if has_unanswered_changes_requested:
         bucket = "NEEDS_YOU"
+    elif bot_review:
+        bucket = "NEEDS_YOU"
+        if bot_review["reason"] == "changes_requested":
+            review_state = "CHANGES_REQUESTED"
+            review_author = bot_review["login"]
+            review_body = bot_review["body"]
     elif review_state == "APPROVED":
         bucket = "PROBABLY_FINE"
     elif their_dt and your_dt and their_dt > your_dt:
@@ -284,6 +603,14 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
         snippet_body = _snippet(last_comment.get("body", ""))
         snippet_when = _parse_dt(last_comment.get("createdAt"))
 
+    link = _closing_link_info(pr)
+    suggested: list[int] = []
+    confidence = None
+    if link["has_closing_link"] is False and link["closing_link_reason"] != "non_default_base":
+        suggested, confidence = _suggest_close_issues(pr, assigned_issue_candidates or [])
+
+    bot_at = bot_review["at"] if bot_review else None
+
     return {
         "type": "pr",
         "bucket": bucket,
@@ -303,6 +630,20 @@ def bucket_pr(pr: dict, me: str, ignore_bots: bool, min_age_hours: float = 0) ->
         "their_activity_at": _iso_utc(their_dt),
         "your_activity_days_ago": _days_ago(your_dt),
         "your_activity_at": _iso_utc(your_dt),
+        # Linked issue (Kaycee: missing `Closes #N` costs contributors their Wave points)
+        **link,
+        "suggested_close_issues": suggested,
+        "suggestion_confidence": confidence,
+        # Bot reviewers that ask for changes after your last push
+        "bot_review_actionable": bool(bot_review),
+        "bot_review_author": bot_review["login"] if bot_review else "",
+        "bot_review_reason": bot_review["reason"] if bot_review else None,
+        "bot_review_body": bot_review["body"] if bot_review else "",
+        "bot_review_days_ago": _days_ago(bot_at),
+        "bot_review_at": _iso_utc(bot_at),
+        "bot_feedback": bot_feedback,
+        # CI on the head commit (informational only; never changes the bucket)
+        **_ci_summary(pr),
     }
 
 
@@ -502,6 +843,7 @@ def build_claims_shelf(merged_prs: list[dict], days: int = 14) -> list[dict]:
         merged_at = _parse_dt(pr.get("mergedAt"))
         if not merged_at or merged_at.timestamp() < cutoff:
             continue
+        link = _closing_link_info(pr)
         results.append(
             {
                 "type": "claim",
@@ -511,9 +853,47 @@ def build_claims_shelf(merged_prs: list[dict], days: int = 14) -> list[dict]:
                 "url": pr.get("url", ""),
                 "merged_days_ago": _days_ago(merged_at),
                 "merged_at": _iso_utc(merged_at),
+                **link,
+                # Merged with no linked issue: Drips/bounty settlement usually can't
+                # match it to an issue automatically.
+                "points_at_risk": link["has_closing_link"] is False,
             }
         )
     return results
+
+
+def _assigned_issues_by_repo(involved_issues: list[dict], me: str) -> dict[str, list[int]]:
+    """Map repo (lowercase) -> open issue numbers assigned to you."""
+    me_lo = me.lower()
+    out: dict[str, list[int]] = {}
+    for issue in involved_issues:
+        assignees = [(a.get("login") or "").lower() for a in (issue.get("assignees") or {}).get("nodes", [])]
+        if me_lo in assignees:
+            out.setdefault(issue["repository"]["nameWithOwner"].lower(), []).append(issue["number"])
+    return out
+
+
+def _closing_claims(open_prs: list[dict]) -> dict[tuple[str, int], set[int]]:
+    """Map (repo lowercase, issue number) -> numbers of your open PRs that already close it."""
+    claims: dict[tuple[str, int], set[int]] = {}
+    for pr in open_prs:
+        for ref in (pr.get("closingIssuesReferences") or {}).get("nodes", []) or []:
+            key = ((ref.get("repository") or {}).get("nameWithOwner", "").lower(), ref.get("number"))
+            claims.setdefault(key, set()).add(pr["number"])
+    return claims
+
+
+def _candidates_for_pr(
+    pr: dict,
+    assigned_by_repo: dict[str, list[int]],
+    closing_claims: dict[tuple[str, int], set[int]],
+) -> list[int]:
+    """Assigned issues in this PR's repo that no OTHER open PR of yours already closes."""
+    repo_lo = pr["repository"]["nameWithOwner"].lower()
+    return [
+        num for num in assigned_by_repo.get(repo_lo, [])
+        if not (closing_claims.get((repo_lo, num), set()) - {pr["number"]})
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +938,10 @@ def build_fork_report(
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
+def _is_own_repo(repo: str, me_lo: str) -> bool:
+    return bool(me_lo) and repo.split("/", 1)[0].lower() == me_lo
+
 
 def run_triage(
     client: GitHubClient,
@@ -612,9 +996,18 @@ def run_triage(
     # Compute
     linked = _build_linked_set(open_prs, client)
 
+    assigned_by_repo = _assigned_issues_by_repo(involved_issues, client.username)
+    closing_claims = _closing_claims(open_prs)
+
     bucketed_prs: dict[str, list] = {"NEEDS_YOU": [], "WAITING_ON_THEM": [], "PROBABLY_FINE": []}
     for pr in open_prs:
-        result = bucket_pr(pr, client.username, ignore_bots, min_age_hours=min_age_hours)
+        result = bucket_pr(
+            pr,
+            client.username,
+            ignore_bots,
+            min_age_hours=min_age_hours,
+            assigned_issue_candidates=_candidates_for_pr(pr, assigned_by_repo, closing_claims),
+        )
         bucketed_prs[result["bucket"]].append(result)
 
     unlinked_issues = []
@@ -656,5 +1049,13 @@ def run_triage(
             "unlinked_issues": len(unlinked_issues),
             "ready_to_claim": len(claims),
             "repos_need_fork": sum(1 for f in fork_report if f["needs_fork"]),
+            # External repos only: linking matters for Wave/bounty settlement, not your own repos.
+            "unlinked_prs": sum(
+                1 for items in bucketed_prs.values() for p in items
+                if p.get("has_closing_link") is False and not _is_own_repo(p["repo"], me_lo)
+            ),
+            "points_at_risk": sum(
+                1 for c in claims if c.get("points_at_risk") and not _is_own_repo(c["repo"], me_lo)
+            ),
         },
     }
