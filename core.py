@@ -939,6 +939,196 @@ def build_fork_report(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Maintainer Mode — triage incoming PRs on repos you can merge into
+# ---------------------------------------------------------------------------
+
+MAINTAINER_CI_MIN_RATIO = 0.6       # Kaycee: "if there are 10 CI, 6 must pass"
+MAINTAINER_LARGE_DIFF_LINES = 1000  # additions + deletions
+
+# Files where malicious or risky changes usually hide: dependencies, install
+# scripts, build and CI config. Matched against the full path and the file name.
+SENSITIVE_FILE_PATTERNS = (
+    ".github/workflows/*",
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", ".npmrc",
+    "requirements*.txt", "pyproject.toml", "poetry.lock", "setup.py", "setup.cfg",
+    "Cargo.toml", "Cargo.lock", "go.mod", "go.sum",
+    "Dockerfile", "docker-compose*.yml", "Makefile", "*.sh",
+)
+
+
+def _sensitive_paths(paths: list[str]) -> list[str]:
+    from fnmatch import fnmatch
+    hits = []
+    for p in paths:
+        name = p.rsplit("/", 1)[-1]
+        if any(fnmatch(p, pat) or fnmatch(name, pat) for pat in SENSITIVE_FILE_PATTERNS):
+            hits.append(p)
+    return hits
+
+
+def _assignment_check(pr: dict, author_lo: str) -> tuple[str, list[str], list[str]]:
+    """
+    Was the PR author assigned to the issue(s) this PR closes?
+    Returns (status, assigned_on, not_assigned_on), status one of:
+      assigned | partly_assigned | not_assigned | unverifiable (no linked issue)
+    """
+    repo = (pr.get("repository") or {}).get("nameWithOwner", "")
+    assigned_on, not_assigned_on = [], []
+    for ref in (pr.get("closingIssuesReferences") or {}).get("nodes", []) or []:
+        ref_repo = (ref.get("repository") or {}).get("nameWithOwner", "")
+        label = f"#{ref.get('number')}" if ref_repo.lower() == repo.lower() else f"{ref_repo}#{ref.get('number')}"
+        assignees = {(a.get("login") or "").lower() for a in (ref.get("assignees") or {}).get("nodes", [])}
+        (assigned_on if author_lo in assignees else not_assigned_on).append(label)
+    if not assigned_on and not not_assigned_on:
+        return "unverifiable", [], []
+    if not not_assigned_on:
+        return "assigned", assigned_on, []
+    if not assigned_on:
+        return "not_assigned", [], not_assigned_on
+    return "partly_assigned", assigned_on, not_assigned_on
+
+
+def evaluate_incoming_pr(pr: dict, me: str) -> dict | None:
+    """
+    Score one incoming PR on Kaycee's four checks (assignment, blast radius,
+    linked issue, CI ratio) plus first-timer and sensitive-file signals.
+    Returns None for PRs that should not be shown (your own, or bot-authored).
+    """
+    author = pr.get("author") or {}
+    author_login = author.get("login", "") or "ghost"
+    author_lo = author_login.lower()
+    if author_lo == me.lower():
+        return None
+    if author.get("__typename") == "Bot" or _is_bot_login(author_login):
+        return None
+
+    link = _closing_link_info(pr)
+    assignment, assigned_on, not_assigned_on = _assignment_check(pr, author_lo)
+    additions = pr.get("additions") or 0
+    deletions = pr.get("deletions") or 0
+    changed_files = pr.get("changedFiles") or 0
+    paths = [f.get("path", "") for f in (pr.get("files") or {}).get("nodes", []) or []]
+    sensitive = _sensitive_paths(paths)
+    large_diff = additions + deletions > MAINTAINER_LARGE_DIFF_LINES
+    association = (pr.get("authorAssociation") or "").upper()
+    first_timer = association in _FIRST_TIMER_ASSOCIATIONS
+    ci = _ci_summary(pr)
+
+    completed = (ci["ci_passed"] or 0) + (ci["ci_failed"] or 0)
+    ci_below = bool(ci["ci_failed"]) and completed > 0 and (ci["ci_passed"] or 0) / completed < MAINTAINER_CI_MIN_RATIO
+
+    reasons: list[dict] = []
+
+    def add(code: str, label: str, tone: str) -> None:
+        reasons.append({"code": code, "label": label, "tone": tone})
+
+    if assignment == "not_assigned":
+        add("not_assigned", "Not assigned", "red")
+    elif assignment == "partly_assigned":
+        add("partly_assigned", "Partly assigned", "red")
+    elif assignment == "unverifiable":
+        add("cant_verify", "Can't verify assignment", "yellow")
+    else:
+        add("assigned", "Assigned", "green")
+    if large_diff:
+        add("large_diff", f"Large diff +{additions:,} / -{deletions:,}", "red")
+    if sensitive:
+        add("sensitive_files", "Touches sensitive files", "red")
+    if first_timer:
+        add("first_timer", "First-time contributor", "yellow")
+    if link["has_closing_link"] is False:
+        add("no_linked_issue", "No linked issue", "yellow")
+    if ci_below:
+        add("ci_below", f"CI {ci['ci_passed']}/{completed} passing", "red")
+    elif ci["ci_state"] == "AWAITING_APPROVAL":
+        add("ci_awaiting", "CI awaiting approval", "yellow")
+
+    risky_unverified = assignment == "unverifiable" and (large_diff or first_timer or bool(sensitive))
+    if pr.get("isDraft"):
+        bucket = "DRAFTS"
+    elif assignment in ("not_assigned", "partly_assigned") or risky_unverified:
+        bucket = "SUSPICIOUS"
+    elif link["has_closing_link"] is False or ci_below:
+        bucket = "BOUNCE_BACK"
+    else:
+        bucket = "REVIEW_NOW"
+
+    created = _parse_dt(pr.get("createdAt"))
+    return {
+        "type": "incoming_pr",
+        "bucket": bucket,
+        "repo": (pr.get("repository") or {}).get("nameWithOwner", ""),
+        "number": pr["number"],
+        "title": pr.get("title", ""),
+        "url": pr.get("url", ""),
+        "is_draft": bool(pr.get("isDraft")),
+        "author": author_login,
+        "author_association": association,
+        "is_first_timer": first_timer,
+        "created_days_ago": _days_ago(created),
+        "created_at": _iso_utc(created),
+        "assignment_status": assignment,
+        "assigned_on": assigned_on,
+        "not_assigned_on": not_assigned_on,
+        **link,
+        "additions": additions,
+        "deletions": deletions,
+        "changed_files": changed_files,
+        "large_diff": large_diff,
+        "sensitive_files": sensitive,
+        "files_partial": changed_files > len(paths),
+        **ci,
+        "ci_below_threshold": ci_below,
+        "reasons": reasons,
+    }
+
+
+MAINTAINER_BUCKETS = ("SUSPICIOUS", "BOUNCE_BACK", "REVIEW_NOW", "DRAFTS")
+
+
+def run_maintainer_triage(
+    client: GitHubClient,
+    ignore_repos: set[str] | None = None,
+    only_repos: set[str] | None = None,
+) -> dict:
+    """
+    Read-only triage of PRs other people opened on repos you can merge into.
+    Never comments, labels, closes or merges anything.
+    """
+    ignore_repos = {r.lower() for r in (ignore_repos or set())}
+    only_repos = {r.lower() for r in (only_repos or set())}
+
+    repos, truncated = client.get_maintained_repos_with_open_prs()
+    repos = [
+        r for r in repos
+        if r.lower() not in ignore_repos and (not only_repos or r.lower() in only_repos)
+    ]
+    prs = client.get_incoming_prs(repos)
+
+    buckets: dict[str, list] = {b: [] for b in MAINTAINER_BUCKETS}
+    for pr in prs:
+        item = evaluate_incoming_pr(pr, client.username)
+        if item:
+            buckets[item["bucket"]].append(item)
+    for items in buckets.values():
+        items.sort(key=lambda i: i.get("created_at") or "", reverse=True)
+
+    return {
+        "username": client.username,
+        "view": "maintainer",
+        "maintainer": buckets,
+        "summary": {
+            "suspicious": len(buckets["SUSPICIOUS"]),
+            "bounce_back": len(buckets["BOUNCE_BACK"]),
+            "review_now": len(buckets["REVIEW_NOW"]),
+            "drafts": len(buckets["DRAFTS"]),
+            "repos_scanned": len(repos),
+            "repos_truncated": truncated,
+        },
+    }
+
+
 def _is_own_repo(repo: str, me_lo: str) -> bool:
     return bool(me_lo) and repo.split("/", 1)[0].lower() == me_lo
 

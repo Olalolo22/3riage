@@ -189,6 +189,40 @@ class TestAppOAuthAndMultiUserIsolation(unittest.TestCase):
         self.assertEqual(res_b3["data"]["username"], "bob")
         self.assertEqual(mock_run_triage.call_count, 3)
 
+    def test_demo_maintainer_view_returns_maintainer_sample(self):
+        client = app_module.app.test_client()
+        data = client.get("/api/triage?demo=true&view=maintainer").get_json()
+        self.assertTrue(data["is_demo"])
+        self.assertEqual(data["data"]["view"], "maintainer")
+        self.assertIn("SUSPICIOUS", data["data"]["maintainer"])
+        contributor = client.get("/api/triage?demo=true").get_json()
+        self.assertIn("prs", contributor["data"])
+
+    @patch("app.run_maintainer_triage")
+    @patch("app.run_triage")
+    def test_maintainer_view_cached_separately_from_contributor(self, mock_run_triage, mock_run_maint):
+        mock_run_triage.side_effect = lambda client, **kwargs: _sample_triage(client.username)
+        mock_run_maint.side_effect = lambda client, **kwargs: {
+            "username": client.username, "view": "maintainer",
+            "maintainer": {"SUSPICIOUS": [], "BOUNCE_BACK": [], "REVIEW_NOW": [], "DRAFTS": []},
+            "summary": {},
+        }
+        c = app_module.app.test_client()
+        c.set_cookie(auth.SESSION_COOKIE_NAME,
+                     auth.encrypt_cookie_payload({"access_token": "token_M", "username": "kaycee", "refresh_token": ""}))
+
+        self.assertIn("prs", c.get("/api/triage").get_json()["data"])
+        m1 = c.get("/api/triage?view=maintainer").get_json()
+        self.assertEqual(m1["data"]["view"], "maintainer")
+        self.assertFalse(m1["cached"])
+        self.assertTrue(c.get("/api/triage?view=maintainer").get_json()["cached"])
+        self.assertTrue(c.get("/api/triage").get_json()["cached"])
+        self.assertEqual((mock_run_triage.call_count, mock_run_maint.call_count), (1, 1))
+
+        # Refreshing the maintainer view refetches it.
+        self.assertFalse(c.post("/api/refresh?view=maintainer").get_json()["cached"])
+        self.assertEqual(mock_run_maint.call_count, 2)
+
     @patch("app.run_triage")
     @patch("app.refresh_access_token")
     def test_expired_github_app_token_auto_refreshes(self, mock_refresh, mock_run_triage):
@@ -446,6 +480,57 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         self.assertEqual(len(prs), 1)
         self.assertEqual(len(calls), 2)
         self.assertNotIn("statusCheckRollup", calls[1])
+
+    def test_maintained_repos_filter_and_cap(self):
+        client = GitHubClient(token="t", username="kaycee")
+        nodes = [
+            {"nameWithOwner": "kaycee/chester", "viewerPermission": "ADMIN", "isArchived": False, "pullRequests": {"totalCount": 4}},
+            {"nameWithOwner": "kaycee/old", "viewerPermission": "ADMIN", "isArchived": True, "pullRequests": {"totalCount": 2}},
+            {"nameWithOwner": "org/quiet", "viewerPermission": "WRITE", "isArchived": False, "pullRequests": {"totalCount": 0}},
+            {"nameWithOwner": "org/readonly", "viewerPermission": "READ", "isArchived": False, "pullRequests": {"totalCount": 9}},
+            {"nameWithOwner": "org/maint", "viewerPermission": "MAINTAIN", "isArchived": False, "pullRequests": {"totalCount": 1}},
+        ]
+        page = {"viewer": {"repositories": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}
+        with patch.object(client, "_gql", return_value=page):
+            repos, truncated = client.get_maintained_repos_with_open_prs()
+        self.assertEqual(repos, ["kaycee/chester", "org/maint"])
+        self.assertFalse(truncated)
+
+        many = [dict(nodes[0], nameWithOwner=f"o/r{i}") for i in range(GitHubClient.MAINTAINER_MAX_REPOS + 5)]
+        page["viewer"]["repositories"]["nodes"] = many
+        with patch.object(client, "_gql", return_value=page):
+            repos, truncated = client.get_maintained_repos_with_open_prs()
+        self.assertEqual(len(repos), GitHubClient.MAINTAINER_MAX_REPOS)
+        self.assertTrue(truncated)
+
+    def test_incoming_prs_batched_with_variables_and_ci_fallback(self):
+        client = GitHubClient(token="t", username="kaycee")
+        repos = [f"org/r{i}" for i in range(GitHubClient.MAINTAINER_REPOS_PER_QUERY + 2)]
+        seen = []
+
+        def fake_gql(query, variables):
+            seen.append((query, variables))
+            if "statusCheckRollup" in query and len(seen) == 1:
+                raise RuntimeError("Resource not accessible by integration")
+            out = {}
+            for k, v in variables.items():
+                if k.startswith("o"):
+                    i = k[1:]
+                    full = f"{v}/{variables['n' + i]}"
+                    out[f"r{i}"] = {"nameWithOwner": full, "defaultBranchRef": {"name": "main"},
+                                    "pullRequests": {"nodes": [{"number": int(i) + 1}]}}
+            return out
+
+        with patch.object(client, "_gql", side_effect=fake_gql):
+            prs = client.get_incoming_prs(repos)
+        self.assertEqual(len(prs), len(repos))
+        self.assertTrue(all(p["repository"]["defaultBranchRef"]["name"] == "main" for p in prs))
+        # Repo names travel as GraphQL variables, never pasted into the query text.
+        for query, variables in seen:
+            self.assertNotIn("org/r", query)
+            self.assertIn("$o0: String!", query)
+        self.assertTrue(any("statusCheckRollup" not in q for q, _ in seen))
+        self.assertEqual(client.get_incoming_prs([]), [])
 
     def test_open_pr_query_raises_unrelated_errors(self):
         client = GitHubClient(token="t", username="octocat")

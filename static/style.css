@@ -185,6 +185,42 @@ body {
   box-shadow: 0 0 6px rgba(248, 81, 73, 0.4);
 }
 
+/* Contributor / Maintainer view toggle */
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-canvas);
+  flex-shrink: 0;
+}
+
+.mode-btn {
+  padding: 3px 9px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.mode-btn.active {
+  background: var(--bg-surface-active);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
 /* Filter Navigation */
 .view-filters {
   display: flex;
@@ -243,6 +279,11 @@ body {
 .filter-tab.tab-issues.active .badge {
   background: var(--color-cyan-subtle);
   color: var(--color-cyan);
+}
+
+.filter-tab.tab-review.active .badge {
+  background: var(--color-green-subtle);
+  color: var(--color-green);
 }
 
 .filter-tab.tab-claims.active .badge {
@@ -830,6 +871,10 @@ kbd {
   border-left: 3px solid var(--color-purple);
 }
 
+.decision-card.border-muted {
+  border-left: 3px solid var(--border-subtle);
+}
+
 .decision-card.border-cyan {
   border-left: 3px solid var(--color-cyan);
 }
@@ -893,6 +938,28 @@ kbd {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.sensitive-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.sensitive-list code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--color-red);
+  background: var(--color-red-subtle);
+}
+
+.sensitive-note {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .btn-snippet {
@@ -1233,6 +1300,21 @@ kbd {
   .connection-status {
     padding-left: 8px;
     min-width: 0;
+  }
+
+  .mode-btn {
+    padding: 3px 7px;
+    font-size: 11px;
+  }
+
+  /* Make room for the view toggle: icon-only refresh on phones */
+  .refresh-text {
+    display: none;
+  }
+
+  .btn-refresh {
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   .status-user {

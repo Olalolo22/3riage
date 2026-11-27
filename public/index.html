@@ -31,6 +31,10 @@
           <span class="status-dot"></span>
           <span class="status-user" id="status-user">Connecting…</span>
         </div>
+        <div class="mode-toggle" role="group" aria-label="Choose view">
+          <button type="button" class="mode-btn active" data-view="contributor" aria-pressed="true" title="Your PRs, bids and claims">Contributor</button>
+          <button type="button" class="mode-btn" data-view="maintainer" aria-pressed="false" title="Incoming PRs on repos you can merge into">Maintainer</button>
+        </div>
       </div>
 
       <!-- Filters & Counts -->
@@ -40,6 +44,15 @@
         <button class="filter-tab tab-waiting" data-filter="waiting"><svg class="ui-icon icon-yellow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg> Waiting <span class="badge" id="count-waiting">0</span></button>
         <button class="filter-tab tab-issues" data-filter="issues"><svg class="ui-icon icon-cyan" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="2" fill="currentColor"></circle></svg> Bids & Issues <span class="badge" id="count-issues">0</span></button>
         <button class="filter-tab tab-claims" data-filter="claims"><svg class="ui-icon icon-purple" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="6"></circle><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"></path></svg> Claims <span class="badge" id="count-claims">0</span></button>
+      </nav>
+
+      <!-- Maintainer Mode filters (shown instead of the contributor tabs) -->
+      <nav class="view-filters hidden" id="maintainer-filters">
+        <button class="filter-tab" data-filter="m_all">All <span class="badge" id="m-count-all">0</span></button>
+        <button class="filter-tab tab-needs-you" data-filter="m_suspicious"><svg class="ui-icon icon-red" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg> Suspicious <span class="badge" id="m-count-suspicious">0</span></button>
+        <button class="filter-tab tab-waiting" data-filter="m_bounce_back"><svg class="ui-icon icon-yellow" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg> Bounce back <span class="badge" id="m-count-bounce">0</span></button>
+        <button class="filter-tab tab-review" data-filter="m_review_now"><svg class="ui-icon icon-green" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg> Review now <span class="badge" id="m-count-review">0</span></button>
+        <button class="filter-tab" data-filter="m_drafts"><svg class="ui-icon icon-muted" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg> Drafts <span class="badge" id="m-count-drafts">0</span></button>
       </nav>
 
       <div class="search-box">

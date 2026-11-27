@@ -358,6 +358,128 @@ class GitHubClient:
         return repos
 
     # ------------------------------------------------------------------
+    # Maintainer Mode: incoming PRs on repos you can merge into
+    # ------------------------------------------------------------------
+
+    MAINTAINER_MAX_REPOS = 40          # cap per request so serverless stays fast
+    MAINTAINER_REPOS_PER_QUERY = 8     # repos batched into one aliased GraphQL call
+    MAINTAINER_PRS_PER_REPO = 30
+
+    _MAINTAINED_REPOS_QUERY = """
+    query($after: String) {
+      viewer {
+        repositories(
+          affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
+          ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
+          first: 100
+          after: $after
+          orderBy: {field: PUSHED_AT, direction: DESC}
+        ) {
+          pageInfo { hasNextPage endCursor }
+          nodes {
+            nameWithOwner viewerPermission isArchived
+            pullRequests(states: OPEN) { totalCount }
+          }
+        }
+      }
+    }
+    """
+
+    def get_maintained_repos_with_open_prs(self, max_pages: int = 3) -> tuple[list[str], bool]:
+        """
+        Repos where you have WRITE/MAINTAIN/ADMIN and at least one open PR, most recently
+        pushed first. Returns (repos, truncated) where truncated means the cap was hit.
+        """
+        repos: list[str] = []
+        after = None
+        for _ in range(max_pages):
+            data = self._gql(self._MAINTAINED_REPOS_QUERY, {"after": after})
+            page = data["viewer"]["repositories"]
+            for repo in page["nodes"]:
+                if repo.get("isArchived"):
+                    continue
+                if repo.get("viewerPermission") not in ("WRITE", "MAINTAIN", "ADMIN"):
+                    continue
+                if not ((repo.get("pullRequests") or {}).get("totalCount") or 0):
+                    continue
+                repos.append(repo["nameWithOwner"])
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            after = page["pageInfo"]["endCursor"]
+        truncated = len(repos) > self.MAINTAINER_MAX_REPOS
+        return repos[: self.MAINTAINER_MAX_REPOS], truncated
+
+    _INCOMING_PR_FIELDS = """
+      number title url isDraft createdAt body
+      author { __typename login }
+      authorAssociation isCrossRepository baseRefName headRefName
+      additions deletions changedFiles
+      files(first: 100) { nodes { path } }
+      closingIssuesReferences(first: 10) {
+        nodes { number repository { nameWithOwner } assignees(first: 10) { nodes { login } } }
+      }
+      commits(last: 1) { nodes { commit { committedDate __CI_FIELDS__ } } }
+    """
+
+    @classmethod
+    def _incoming_prs_query(cls, count: int, with_ci: bool = True) -> str:
+        fields = cls._INCOMING_PR_FIELDS.replace("__CI_FIELDS__", cls._CI_FIELDS if with_ci else "")
+        var_defs = ", ".join(f"$o{i}: String!, $n{i}: String!" for i in range(count))
+        aliases = "\n".join(
+            f"r{i}: repository(owner: $o{i}, name: $n{i}) {{ ...RepoIncoming }}" for i in range(count)
+        )
+        return f"""
+        query({var_defs}) {{
+          {aliases}
+        }}
+        fragment RepoIncoming on Repository {{
+          nameWithOwner
+          defaultBranchRef {{ name }}
+          pullRequests(states: OPEN, first: {cls.MAINTAINER_PRS_PER_REPO},
+                       orderBy: {{field: CREATED_AT, direction: DESC}}) {{
+            totalCount
+            nodes {{ {fields} }}
+          }}
+        }}
+        """
+
+    def _fetch_incoming_batch(self, batch: list[str]) -> list[dict]:
+        variables: dict[str, str] = {}
+        for i, full in enumerate(batch):
+            owner, name = full.split("/", 1)
+            variables[f"o{i}"] = owner
+            variables[f"n{i}"] = name
+        try:
+            data = self._gql(self._incoming_prs_query(len(batch)), variables)
+        except RuntimeError:
+            # Same rule as get_open_prs: CI must never break the view.
+            data = self._gql(self._incoming_prs_query(len(batch), with_ci=False), variables)
+        prs: list[dict] = []
+        for i in range(len(batch)):
+            repo = data.get(f"r{i}")
+            if not repo:
+                continue
+            repo_info = {"nameWithOwner": repo["nameWithOwner"], "defaultBranchRef": repo.get("defaultBranchRef")}
+            for pr in (repo.get("pullRequests") or {}).get("nodes", []) or []:
+                pr["repository"] = repo_info
+                prs.append(pr)
+        return prs
+
+    def get_incoming_prs(self, repos: list[str]) -> list[dict]:
+        """Open PRs on the given repos, batched into a few parallel GraphQL calls."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        batches = [
+            repos[i: i + self.MAINTAINER_REPOS_PER_QUERY]
+            for i in range(0, len(repos), self.MAINTAINER_REPOS_PER_QUERY)
+        ]
+        if not batches:
+            return []
+        with ThreadPoolExecutor(max_workers=min(5, len(batches))) as pool:
+            results = list(pool.map(self._fetch_incoming_batch, batches))
+        return [pr for batch in results for pr in batch]
+
+    # ------------------------------------------------------------------
     # Fork action (write action — uses gh CLI, not the read-only token)
     # ------------------------------------------------------------------
 

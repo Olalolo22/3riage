@@ -9,6 +9,7 @@ Supports three modes seamlessly:
 Provides:
   GET  /                  — Dashboard UI
   GET  /api/triage        — Returns JSON from core.run_triage (per-user 30s cache)
+                            ?view=maintainer returns core.run_maintainer_triage instead
   POST /api/refresh       — Invalidates caller's cache and fetches fresh triage data
   POST /api/fork          — Local CLI fork via `gh` (disabled in public OAuth mode)
   GET  /api/auth/login    — Starts GitHub App / OAuth authorization redirect
@@ -46,9 +47,9 @@ from auth import (
     token_cache_id,
     verify_state_cookie,
 )
-from core import run_triage
+from core import run_maintainer_triage, run_triage
 from github_client import GitHubClient
-from mock_data import get_mock_triage_data
+from mock_data import get_mock_maintainer_data, get_mock_triage_data
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PACKAGED_ASSETS = os.path.join(BASE_DIR, "threeriage_assets")
@@ -280,10 +281,12 @@ def _execute_triage(force_refresh_override: bool = False):
     if auth_error_info:
         return _auth_error_response(auth_error_info)
 
+    maintainer_view = request.args.get("view", "").lower() == "maintainer"
+
     if auth_mode == "demo" or not token:
         return jsonify(
             _build_triage_payload(
-                data=get_mock_triage_data(),
+                data=get_mock_maintainer_data() if maintainer_view else get_mock_triage_data(),
                 cached=False,
                 is_demo=True,
                 auth_mode="demo",
@@ -305,7 +308,8 @@ def _execute_triage(force_refresh_override: bool = False):
         min_age_hours = 0.0
 
     user_cid = token_cache_id(token)
-    cache_key = f"{user_cid}:{include_drafts}:{repo_filter}:{min_age_hours}"
+    view_key = "maintainer" if maintainer_view else "contributor"
+    cache_key = f"{user_cid}:{view_key}:{include_drafts}:{repo_filter}:{min_age_hours}"
     now = time.time()
 
     if not force_refresh and cache_key in _CACHE:
@@ -331,15 +335,19 @@ def _execute_triage(force_refresh_override: bool = False):
     try:
         resolved_username = _resolve_username(token, username)
         client = GitHubClient(token=token, username=resolved_username, ignore_bots=ignore_bots)
-        data = run_triage(
-            client=client,
-            include_drafts=include_drafts,
-            ignore_bots=ignore_bots,
-            ignore_repos=ignore_repos,
-            only_repos=only_repos,
-            claims_days=14,
-            min_age_hours=min_age_hours,
-        )
+        if maintainer_view:
+            # Read-only: lists incoming PRs on repos you can merge into. Never writes.
+            data = run_maintainer_triage(client=client, ignore_repos=ignore_repos, only_repos=only_repos)
+        else:
+            data = run_triage(
+                client=client,
+                include_drafts=include_drafts,
+                ignore_bots=ignore_bots,
+                ignore_repos=ignore_repos,
+                only_repos=only_repos,
+                claims_days=14,
+                min_age_hours=min_age_hours,
+            )
         _prune_cache_if_needed()
         _CACHE[cache_key] = (now, data)
         resp = make_response(
