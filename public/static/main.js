@@ -59,6 +59,10 @@
     fork: '<circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9"></path><path d="M12 12v3"></path>',
     check: '<polyline points="20 6 9 17 4 12"></polyline>',
     xCircle: '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>',
+    alert: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>',
+    link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>',
+    copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>',
+    cpu: '<rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line>',
   };
 
   function uiIcon(name, colorClass = '', size = 13) {
@@ -110,6 +114,81 @@
       return { text: fallbackDays === 0 ? 'today' : `${fallbackDays}d ago`, title: '' };
     }
     return { text: emptyLabel, title: '' };
+  }
+
+  // -------------------------------------------------------------------------
+  // Linked issue / CI helpers
+  // -------------------------------------------------------------------------
+
+  // Linking only matters on other people's repos (Wave / bounty settlement).
+  function isUnlinkedExternal(item) {
+    return item && item.has_closing_link === false && !isOwnRepoItem(item);
+  }
+
+  function ciLabel(item) {
+    if (!item || !item.ci_state) return '';
+    const passed = Number(item.ci_passed) || 0;
+    const failed = Number(item.ci_failed) || 0;
+    const pending = Number(item.ci_pending) || 0;
+    const total = Number(item.ci_total) || 0;
+    const more = item.ci_partial ? '+' : '';
+    if (item.ci_state === 'NONE') return 'No CI';
+    if (item.ci_state === 'AWAITING_APPROVAL') return 'Not run yet. May need maintainer approval';
+    if (failed > 0) return `${passed}/${total}${more} passing · ${failed} failing`;
+    if (pending > 0) return `${passed}/${total}${more} passing · ${pending} running`;
+    return `All ${total}${more} passing`;
+  }
+
+  function ciColor(item) {
+    if (!item || !item.ci_state) return '';
+    if (item.ci_state === 'FAILURE') return 'var(--color-red)';
+    if (item.ci_state === 'SUCCESS') return 'var(--color-green)';
+    if (item.ci_state === 'PENDING' || item.ci_state === 'AWAITING_APPROVAL') return 'var(--color-yellow)';
+    return '';
+  }
+
+  function linkedIssueLabel(item) {
+    if (item.has_closing_link === true) {
+      return (item.linked_issues || []).join(', ') || 'Linked';
+    }
+    if (item.has_closing_link === false) return 'None';
+    return 'Unknown';
+  }
+
+  function linkCalloutHtml(item) {
+    if (!isUnlinkedExternal(item)) return '';
+    const base = escapeHtml(item.base_branch || 'another branch');
+    const def = escapeHtml(item.default_branch || 'the default branch');
+    let headline = 'No linked issue';
+    let body = 'Add a closing line to the PR description so GitHub links this PR to its issue and Drips can settle your points.';
+    if (item.closing_link_reason === 'non_default_base') {
+      headline = 'Closing keyword will not work on this branch';
+      body = `This PR targets <code>${base}</code>, not the default branch <code>${def}</code>, so GitHub ignores closing keywords. Ask the maintainer to link the issue manually from the PR's Development section.`;
+    } else if (item.closing_link_reason === 'keyword_not_linked') {
+      headline = 'Issue mentioned but not linked';
+      body = 'Your description has a closing keyword, but GitHub has not linked any issue. Check the issue number and the repo.';
+    }
+
+    const suggestions = item.suggested_close_issues || [];
+    let snippetHtml = '';
+    if (suggestions.length > 0) {
+      const lead = item.suggestion_confidence === 'ambiguous'
+        ? 'You are assigned to more than one issue here. Pick the one this PR fixes:'
+        : 'You are assigned to this issue in the same repo:';
+      const buttons = suggestions.map(n => {
+        const line = `Closes #${Number(n)}`;
+        return `<button type="button" class="btn btn-secondary btn-snippet" data-copy-url="${escapeHtml(line)}" data-copy-msg="Copied: ${escapeHtml(line)}">${uiIcon('copy', '', 12)} ${escapeHtml(line)}</button>`;
+      }).join('');
+      snippetHtml = `<div class="callout-lead">${lead}</div><div class="callout-actions">${buttons}</div>`;
+    }
+
+    return `
+      <div class="callout callout-yellow">
+        <div class="callout-header">${uiIcon('alert', 'icon-yellow', 13)} ${escapeHtml(headline)}</div>
+        <div class="callout-body">${body}</div>
+        ${snippetHtml}
+      </div>
+    `;
   }
 
   // -------------------------------------------------------------------------
@@ -418,6 +497,15 @@
         if (item.review_state) {
           pillHtml += ` <span class="pill pill-muted">${escapeHtml(item.review_state)}</span>`;
         }
+        if (item.bot_review_actionable) {
+          pillHtml += ` <span class="pill pill-red">${uiIcon('cpu', '', 10)} bot review</span>`;
+        }
+        if (isUnlinkedExternal(item)) {
+          pillHtml += ` <span class="pill pill-yellow">No linked issue</span>`;
+        }
+        if (item.ci_state === 'FAILURE') {
+          pillHtml += ` <span class="pill pill-red">CI failing</span>`;
+        }
         if (item.their_last_comment_at || item.their_last_comment_days_ago != null) {
           ageText = formatRelativeAge(item.their_last_comment_at, item.their_last_comment_days_ago);
         } else {
@@ -440,6 +528,9 @@
         ageText = formatRelativeAge(item.my_last_comment_at, item.days_since_my_comment);
       } else if (item.type === 'claim') {
         pillHtml = `<span class="pill pill-purple">ready to claim</span>`;
+        if (item.points_at_risk && !isOwnRepoItem(item)) {
+          pillHtml += ` <span class="pill pill-red">Points at risk</span>`;
+        }
         ageText = formatRelativeAge(item.merged_at, item.merged_days_ago);
       }
 
@@ -533,7 +624,15 @@
 
     if (item.bucket === 'NEEDS_YOU') {
       decisionBorder = 'border-red';
-      if (item.review_state === 'CHANGES_REQUESTED') {
+      const botIsTheBlocker = item.bot_review_actionable &&
+        (item.review_state !== 'CHANGES_REQUESTED' || item.review_author === item.bot_review_author);
+      if (botIsTheBlocker) {
+        const bot = escapeHtml(item.bot_review_author || 'review bot');
+        decisionHeadline = `${uiIcon('cpu', 'icon-red', 15)} Action Required: Bot Review Feedback`;
+        decisionSubtext = item.bot_review_reason === 'review_thread'
+          ? `@${bot} left an unresolved review comment after your last push. Address it or reply in the thread.`
+          : `@${bot} requested changes after your last push. Treat it like a maintainer review.`;
+      } else if (item.review_state === 'CHANGES_REQUESTED') {
         decisionHeadline = `${uiIcon('zap', 'icon-red', 15)} Action Required: Changes Requested`;
         decisionSubtext = `Reviewer @${escapeHtml(item.review_author || 'maintainer')} requested changes. You have not pushed a subsequent commit yet.`;
       } else {
@@ -546,12 +645,21 @@
       decisionSubtext = 'All submitted reviews are approved, or the last comment indicates sign-off (LGTM).';
     }
 
-    const snippet = item.their_last_comment_body || item.review_body || '';
-    const snippetAuthor = item.their_last_comment_author || item.review_author || 'maintainer';
-    const snippetAge = formatRelativeAge(item.their_last_comment_at, item.their_last_comment_days_ago);
+    const useBotSnippet = item.bot_review_actionable && item.bot_review_body && !item.their_last_comment_body;
+    const snippet = useBotSnippet ? item.bot_review_body : (item.their_last_comment_body || item.review_body || '');
+    const snippetAuthor = useBotSnippet
+      ? item.bot_review_author
+      : (item.their_last_comment_author || item.review_author || 'maintainer');
+    const snippetAge = useBotSnippet
+      ? formatRelativeAge(item.bot_review_at, item.bot_review_days_ago)
+      : formatRelativeAge(item.their_last_comment_at, item.their_last_comment_days_ago);
     const theirActivity = formatDetailTimestamp(item.their_activity_at, item.their_activity_days_ago, 'None recorded');
     const yourActivity = formatDetailTimestamp(item.your_activity_at, item.your_activity_days_ago, 'None recorded');
     const itemUrl = safeUrl(item.url);
+    const ciText = ciLabel(item);
+    const ciStyle = ciColor(item);
+    const botHint = item.bot_feedback;
+    const botHintAge = botHint ? formatRelativeAge(botHint.at, botHint.days_ago) : '';
 
     detailContent.innerHTML = `
       <div class="detail-header">
@@ -569,6 +677,8 @@
         <div class="decision-header">${decisionHeadline}</div>
         <div class="decision-subtext">${decisionSubtext}</div>
       </div>
+
+      ${linkCalloutHtml(item)}
 
       ${snippet ? `
         <div class="detail-section">
@@ -599,8 +709,28 @@
             <span class="meta-label">Draft Status</span>
             <span class="meta-value">${item.is_draft ? 'Draft PR' : 'Ready for review'}</span>
           </div>
+          ${ciText ? `
+          <div class="meta-item">
+            <span class="meta-label">CI Checks</span>
+            <span class="meta-value"${ciStyle ? ` style="color: ${ciStyle};"` : ''}>${escapeHtml(ciText)}</span>
+          </div>` : ''}
+          ${item.has_closing_link !== undefined ? `
+          <div class="meta-item">
+            <span class="meta-label">Linked Issue</span>
+            <span class="meta-value meta-value-icon"${isUnlinkedExternal(item) ? ' style="color: var(--color-yellow);"' : ''}>${uiIcon('link', '', 12)} ${escapeHtml(linkedIssueLabel(item))}</span>
+          </div>` : ''}
         </div>
       </div>
+
+      ${botHint ? `
+        <div class="detail-section">
+          <div class="detail-section-title">Bot Feedback</div>
+          <div class="feedback-quote">
+            <div class="feedback-meta">${uiIcon('cpu', '', 11)} @${escapeHtml(botHint.login)}${botHintAge ? ` (${escapeHtml(botHintAge)})` : ''}:</div>
+            "${escapeHtml(botHint.body)}"
+          </div>
+        </div>
+      ` : ''}
     `;
   }
 
@@ -697,6 +827,10 @@
   function renderClaimDetail(item) {
     const itemUrl = safeUrl(item.url);
     const mergedWhen = formatRelativeAge(item.merged_at, item.merged_days_ago) || 'recently';
+    const atRisk = item.points_at_risk && !isOwnRepoItem(item);
+    const linkedLine = (item.linked_issues || []).length
+      ? `<br>Closes ${escapeHtml(item.linked_issues.join(', '))}`
+      : '';
 
     detailContent.innerHTML = `
       <div class="detail-header">
@@ -710,16 +844,22 @@
         <h2 class="detail-title">${escapeHtml(item.title)}</h2>
       </div>
 
-      <div class="decision-card border-purple">
-        <div class="decision-header">${uiIcon('award', 'icon-purple', 15)} Merged: Ready to Claim Bounty / Points</div>
-        <div class="decision-subtext">This pull request merged ${escapeHtml(mergedWhen)}. Submit this link in your community Discord or Wave channel to claim rewards.</div>
+      <div class="decision-card ${atRisk ? 'border-red' : 'border-purple'}">
+        <div class="decision-header">${atRisk
+          ? `${uiIcon('alert', 'icon-red', 15)} Merged, but Points at Risk`
+          : `${uiIcon('award', 'icon-purple', 15)} Merged: Ready to Claim Bounty / Points`}</div>
+        <div class="decision-subtext">This pull request merged ${escapeHtml(mergedWhen)}. ${atRisk
+          ? `It was not linked to an issue${item.closing_link_reason === 'non_default_base'
+              ? ` (it targeted <code>${escapeHtml(item.base_branch || 'another branch')}</code>, where closing keywords are ignored)`
+              : ''}, so Drips may not settle points for it automatically. Raise it in the Drips Discord with the PR and issue links.`
+          : 'Submit this link in your community Discord or Wave channel to claim rewards.'}</div>
       </div>
 
       <div class="detail-section">
         <div class="detail-section-title">Claiming Payload</div>
         <div class="feedback-quote" style="font-family: var(--font-mono); font-size: 12px;">
           ${escapeHtml(item.title)}<br>
-          ${escapeHtml(itemUrl)}
+          ${escapeHtml(itemUrl)}${linkedLine}
         </div>
       </div>
     `;

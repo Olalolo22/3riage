@@ -13,6 +13,8 @@ A contributor-first triage engine. Shows everything on GitHub waiting for your a
 | Multi-reviewer deadlocks | Single review status masks others | Analyzes reviews per reviewer so one approval cannot mask an unresolved block |
 | Unforked repos you're assigned on | Invisible | Diffs your forks against assigned repos |
 | Recently merged PRs to claim | No view | "Ready to Claim" shelf (last 14 days) |
+| PRs missing `Closes #N` | Merges fine, but never links the issue, so Wave/bounty points can be lost | Flags open and merged PRs with no linked issue and suggests the exact `Closes #N` line from your assigned issues |
+| CI health on your PRs | Spread across the Checks tab | `8/10 passing` summary per PR, including "not run yet" on first-time fork PRs |
 
 ## Quickstart (CLI + Local Web Dashboard)
 
@@ -78,6 +80,14 @@ GitHub reviews are evaluated **per reviewer**. If Reviewer A requests changes an
 ### Bot Filtering & AI Reviewers
 - **Hygiene & CI Bots:** Automated accounts like `dependabot`, `github-actions`, `stale`, and CI bots are filtered out by default when `TRIAGE_IGNORE_BOTS=true`.
 - **AI Code Reviewers:** Automated reviewers like `@coderabbitai` and `@copilot-pull-request-reviewer` are **intentionally not ignored**. For personal projects, bounties, and learning, their actionable comments act like mentor reviews requiring your input. (If you ever want to treat them as background noise, add their logins to `IGNORE_BOT_LOGINS` in `github_client.py`).
+- **Custom review bots:** Some repos run their own review bots. Any bot (even one 3riage has never heard of) moves a PR to `NEEDS_YOU` if it submits a `CHANGES_REQUESTED` review or leaves an unresolved, non-outdated review thread **after your last commit**. Plain comments from unknown bots show as a soft "Bot feedback" note and never change the bucket.
+
+### Linked issues and CI
+- **No linked issue:** if GitHub hasn't linked your PR to an issue it closes, 3riage says why (no keyword, keyword but no link, or a PR into a non-default branch where keywords are ignored) and, when you're assigned to an issue in the same repo, gives a one-click `Closes #N` to copy.
+- **Points at risk:** merged PRs with no linked issue are flagged on the claims shelf so you can raise them on Discord before the wave closes.
+- **CI ratio:** shown for information only. CI never moves a PR between buckets.
+
+*Thanks to Kaycee, a Drips Wave maintainer, whose walkthrough feedback shaped these checks.*
 
 ## Self-Hosting
 

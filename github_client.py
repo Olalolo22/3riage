@@ -154,7 +154,8 @@ class GitHubClient:
           pageInfo { hasNextPage endCursor }
           nodes {
             number title url isDraft
-            repository { nameWithOwner }
+            baseRefName headRefName isCrossRepository authorAssociation
+            repository { nameWithOwner defaultBranchRef { name } }
             body
             closingIssuesReferences(first: 10) {
               nodes { number repository { nameWithOwner } }
@@ -174,7 +175,7 @@ class GitHubClient:
               nodes { author { __typename login } body createdAt }
             }
             commits(last: 1) {
-              nodes { commit { committedDate } }
+              nodes { commit { committedDate __CI_FIELDS__ } }
             }
           }
         }
@@ -182,11 +183,38 @@ class GitHubClient:
     }
     """
 
+    # CI results on the head commit. Kept separate so the query can fall back without it
+    # if a token is not allowed to read check results.
+    _CI_FIELDS = """
+                  statusCheckRollup {
+                    state
+                    contexts(first: 50) {
+                      totalCount
+                      nodes {
+                        __typename
+                        ... on CheckRun { name conclusion status }
+                        ... on StatusContext { context state }
+                      }
+                    }
+                  }"""
+    _PR_QUERY_NO_CI = _PR_QUERY.replace("__CI_FIELDS__", "")
+    _PR_QUERY = _PR_QUERY.replace("__CI_FIELDS__", _CI_FIELDS)
+
     def get_open_prs(self, include_drafts: bool = False) -> list[dict]:
         prs = []
         after = None
+        query = self._PR_QUERY
         while True:
-            data = self._gql(self._PR_QUERY, {"login": self.username, "after": after})
+            try:
+                data = self._gql(query, {"login": self.username, "after": after})
+            except RuntimeError:
+                # Never let CI data take the whole triage down: retry once without it.
+                # If the error had nothing to do with CI, the retry raises it again.
+                # Commits then carry no statusCheckRollup key and CI shows as unknown.
+                if query is self._PR_QUERY_NO_CI:
+                    raise
+                query = self._PR_QUERY_NO_CI
+                data = self._gql(query, {"login": self.username, "after": after})
             page = data["user"]["pullRequests"]
             for pr in page["nodes"]:
                 if pr["isDraft"] and not include_drafts:
@@ -210,7 +238,11 @@ class GitHubClient:
           nodes {
             number title url
             mergedAt
-            repository { nameWithOwner }
+            body baseRefName
+            repository { nameWithOwner defaultBranchRef { name } }
+            closingIssuesReferences(first: 10) {
+              nodes { number repository { nameWithOwner } }
+            }
           }
         }
       }

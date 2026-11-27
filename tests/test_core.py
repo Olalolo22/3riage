@@ -364,5 +364,315 @@ class TestClaimsShelf(unittest.TestCase):
         self.assertEqual(shelf[0]["number"], 101)
 
 
+def _pr(**overrides):
+    """Open PR fixture with the fields the new link/bot/CI logic reads."""
+    pr = {
+        "repository": {"nameWithOwner": "owner/repo", "defaultBranchRef": {"name": "main"}},
+        "number": 5,
+        "title": "Fix thing",
+        "url": "https://github.com/owner/repo/pull/5",
+        "isDraft": False,
+        "baseRefName": "main",
+        "headRefName": "fix-thing",
+        "isCrossRepository": True,
+        "authorAssociation": "CONTRIBUTOR",
+        "body": "",
+        "closingIssuesReferences": {"nodes": []},
+        "reviews": {"nodes": []},
+        "reviewThreads": {"nodes": []},
+        "comments": {"nodes": []},
+        # statusCheckRollup is null when the head commit has no checks at all.
+        "commits": {"nodes": [{"commit": {"committedDate": _iso(H3_AGO), "statusCheckRollup": None}}]},
+    }
+    pr.update(overrides)
+    return pr
+
+
+class TestLinkedIssueDetection(unittest.TestCase):
+    def test_linked_pr_has_no_reason(self):
+        pr = _pr(closingIssuesReferences={"nodes": [{"number": 7, "repository": {"nameWithOwner": "owner/repo"}}]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertTrue(res["has_closing_link"])
+        self.assertEqual(res["linked_issues"], ["#7"])
+        self.assertIsNone(res["closing_link_reason"])
+        self.assertEqual(res["suggested_close_issues"], [])
+
+    def test_cross_repo_link_keeps_full_ref(self):
+        pr = _pr(closingIssuesReferences={"nodes": [{"number": 3, "repository": {"nameWithOwner": "other/lib"}}]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertEqual(res["linked_issues"], ["other/lib#3"])
+
+    def test_missing_keyword(self):
+        res = core.bucket_pr(_pr(body="Implements the thing."), "me", ignore_bots=True)
+        self.assertIs(res["has_closing_link"], False)
+        self.assertEqual(res["closing_link_reason"], "missing_keyword")
+
+    def test_keyword_inside_html_comment_does_not_count(self):
+        res = core.bucket_pr(_pr(body="<!-- Closes #12 -->\nDone."), "me", ignore_bots=True)
+        self.assertEqual(res["closing_link_reason"], "missing_keyword")
+
+    def test_keyword_present_but_not_linked(self):
+        for body in ("Closes #999", "fixes: #4", "Resolved owner/repo#8",
+                     "closes https://github.com/owner/repo/issues/2"):
+            res = core.bucket_pr(_pr(body=body), "me", ignore_bots=True)
+            self.assertEqual(res["closing_link_reason"], "keyword_not_linked", body)
+
+    def test_non_default_base_branch(self):
+        res = core.bucket_pr(_pr(body="Closes #12", baseRefName="dev"), "me", ignore_bots=True,
+                             assigned_issue_candidates=[12])
+        self.assertEqual(res["closing_link_reason"], "non_default_base")
+        self.assertIs(res["targets_default_branch"], False)
+        self.assertEqual(res["base_branch"], "dev")
+        self.assertEqual(res["default_branch"], "main")
+        # A keyword would not help, so no copy-paste suggestion is offered.
+        self.assertEqual(res["suggested_close_issues"], [])
+
+    def test_unknown_when_field_not_fetched(self):
+        pr = _pr()
+        del pr["closingIssuesReferences"]
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertIsNone(res["has_closing_link"])
+        self.assertIsNone(res["closing_link_reason"])
+
+    def test_single_assigned_issue_is_strong_suggestion(self):
+        res = core.bucket_pr(_pr(), "me", ignore_bots=True, assigned_issue_candidates=[711])
+        self.assertEqual(res["suggested_close_issues"], [711])
+        self.assertEqual(res["suggestion_confidence"], "strong")
+
+    def test_branch_name_match_is_strong_and_first(self):
+        res = core.bucket_pr(_pr(headRefName="fix/711-ticker"), "me", ignore_bots=True,
+                             assigned_issue_candidates=[650, 711])
+        self.assertEqual(res["suggested_close_issues"], [711, 650])
+        self.assertEqual(res["suggestion_confidence"], "strong")
+
+    def test_body_reference_match_is_strong(self):
+        res = core.bucket_pr(_pr(body="Refs #650"), "me", ignore_bots=True,
+                             assigned_issue_candidates=[711, 650])
+        self.assertEqual(res["suggested_close_issues"][0], 650)
+        self.assertEqual(res["suggestion_confidence"], "strong")
+
+    def test_several_candidates_without_match_are_ambiguous(self):
+        res = core.bucket_pr(_pr(), "me", ignore_bots=True, assigned_issue_candidates=[711, 650])
+        self.assertEqual(res["suggested_close_issues"], [650, 711])
+        self.assertEqual(res["suggestion_confidence"], "ambiguous")
+
+    def test_branch_digit_boundary(self):
+        # "7110" must not match issue 711
+        res = core.bucket_pr(_pr(headRefName="feat/7110"), "me", ignore_bots=True,
+                             assigned_issue_candidates=[711, 650])
+        self.assertEqual(res["suggestion_confidence"], "ambiguous")
+
+
+class TestMergedPointsAtRisk(unittest.TestCase):
+    def _merged(self, **overrides):
+        pr = {
+            "number": 101, "title": "PR", "url": "u", "mergedAt": _iso(D5_AGO),
+            "repository": {"nameWithOwner": "o/r", "defaultBranchRef": {"name": "main"}},
+            "baseRefName": "main", "body": "",
+            "closingIssuesReferences": {"nodes": []},
+        }
+        pr.update(overrides)
+        return pr
+
+    def test_merged_without_link_is_at_risk(self):
+        shelf = core.build_claims_shelf([self._merged()], days=14)
+        self.assertTrue(shelf[0]["points_at_risk"])
+        self.assertEqual(shelf[0]["closing_link_reason"], "missing_keyword")
+
+    def test_merged_with_link_is_safe(self):
+        shelf = core.build_claims_shelf(
+            [self._merged(closingIssuesReferences={"nodes": [{"number": 9, "repository": {"nameWithOwner": "o/r"}}]})],
+            days=14,
+        )
+        self.assertFalse(shelf[0]["points_at_risk"])
+        self.assertEqual(shelf[0]["linked_issues"], ["#9"])
+
+    def test_merged_without_link_data_is_not_flagged(self):
+        pr = self._merged()
+        del pr["closingIssuesReferences"]
+        shelf = core.build_claims_shelf([pr], days=14)
+        self.assertFalse(shelf[0]["points_at_risk"])
+
+
+class TestSuggestionCandidates(unittest.TestCase):
+    def test_issue_closed_by_another_pr_is_not_suggested(self):
+        issues = [
+            {"repository": {"nameWithOwner": "Owner/Repo"}, "number": 711, "assignees": {"nodes": [{"login": "Me"}]}},
+            {"repository": {"nameWithOwner": "owner/repo"}, "number": 650, "assignees": {"nodes": [{"login": "me"}]}},
+            {"repository": {"nameWithOwner": "owner/repo"}, "number": 800, "assignees": {"nodes": [{"login": "rival"}]}},
+        ]
+        other_pr = _pr(number=9, closingIssuesReferences={"nodes": [{"number": 650, "repository": {"nameWithOwner": "owner/repo"}}]})
+        this_pr = _pr(number=5)
+        by_repo = core._assigned_issues_by_repo(issues, "me")
+        claims = core._closing_claims([other_pr, this_pr])
+        self.assertEqual(core._candidates_for_pr(this_pr, by_repo, claims), [711])
+        # The PR that already closes #650 still sees it (it is its own link).
+        self.assertIn(650, core._candidates_for_pr(other_pr, by_repo, claims))
+
+
+class TestActionableBotReviews(unittest.TestCase):
+    BOT = {"__typename": "Bot", "login": "repo-guard"}
+
+    def test_bot_changes_requested_after_commit_needs_you(self):
+        pr = _pr(reviews={"nodes": [
+            {"author": self.BOT, "state": "CHANGES_REQUESTED", "body": "Add tests", "submittedAt": _iso(H1_AGO)}
+        ]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertEqual(res["bucket"], "NEEDS_YOU")
+        self.assertTrue(res["bot_review_actionable"])
+        self.assertEqual(res["bot_review_reason"], "changes_requested")
+        self.assertEqual(res["review_state"], "CHANGES_REQUESTED")
+        self.assertEqual(res["review_author"], "repo-guard")
+
+    def test_bot_changes_requested_before_commit_is_answered(self):
+        pr = _pr(
+            reviews={"nodes": [{"author": self.BOT, "state": "CHANGES_REQUESTED", "submittedAt": _iso(H4_AGO)}]},
+        )
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertEqual(res["bucket"], "WAITING_ON_THEM")
+        self.assertFalse(res["bot_review_actionable"])
+
+    def test_later_bot_approval_clears_it(self):
+        pr = _pr(reviews={"nodes": [
+            {"author": self.BOT, "state": "CHANGES_REQUESTED", "submittedAt": _iso(H2_AGO)},
+            {"author": self.BOT, "state": "APPROVED", "submittedAt": _iso(H1_AGO)},
+        ]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertFalse(res["bot_review_actionable"])
+        self.assertNotEqual(res["bucket"], "NEEDS_YOU")
+
+    def test_dismissed_bot_review_cleared(self):
+        pr = _pr(reviews={"nodes": [
+            {"author": self.BOT, "state": "CHANGES_REQUESTED", "submittedAt": _iso(H2_AGO)},
+            {"author": self.BOT, "state": "DISMISSED", "submittedAt": _iso(H1_AGO)},
+        ]})
+        self.assertFalse(core.bucket_pr(pr, "me", ignore_bots=True)["bot_review_actionable"])
+
+    def test_bot_approval_alone_does_not_mark_probably_fine(self):
+        pr = _pr(reviews={"nodes": [{"author": self.BOT, "state": "APPROVED", "submittedAt": _iso(H1_AGO)}]})
+        self.assertEqual(core.bucket_pr(pr, "me", ignore_bots=True)["bucket"], "WAITING_ON_THEM")
+
+    def _thread(self, created, resolved=False, outdated=False, author=None):
+        return {
+            "isResolved": resolved, "isOutdated": outdated,
+            "comments": {"nodes": [{"author": author or self.BOT, "body": "Use a constant here", "createdAt": _iso(created)}]},
+        }
+
+    def test_unresolved_bot_thread_after_commit_needs_you(self):
+        res = core.bucket_pr(_pr(reviewThreads={"nodes": [self._thread(H1_AGO)]}), "me", ignore_bots=True)
+        self.assertEqual(res["bucket"], "NEEDS_YOU")
+        self.assertEqual(res["bot_review_reason"], "review_thread")
+
+    def test_bot_thread_older_than_commit_stays_waiting(self):
+        """Fixed in a later push but never marked resolved: must not stick in NEEDS_YOU."""
+        res = core.bucket_pr(_pr(reviewThreads={"nodes": [self._thread(H4_AGO)]}), "me", ignore_bots=True)
+        self.assertEqual(res["bucket"], "WAITING_ON_THEM")
+        self.assertFalse(res["bot_review_actionable"])
+
+    def test_outdated_or_resolved_bot_thread_ignored(self):
+        for t in (self._thread(H1_AGO, outdated=True), self._thread(H1_AGO, resolved=True)):
+            res = core.bucket_pr(_pr(reviewThreads={"nodes": [t]}), "me", ignore_bots=True)
+            self.assertFalse(res["bot_review_actionable"])
+
+    def test_thread_where_you_replied_last_is_not_actionable(self):
+        t = self._thread(H1_AGO, author={"login": "me"})
+        res = core.bucket_pr(_pr(reviewThreads={"nodes": [t]}), "me", ignore_bots=True)
+        self.assertFalse(res["bot_review_actionable"])
+
+    def test_status_bot_comment_still_ignored_and_no_hint(self):
+        pr = _pr(comments={"nodes": [
+            {"author": {"__typename": "Bot", "login": "drips-wave"}, "body": "Wave status", "createdAt": _iso(H1_AGO)}
+        ]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertEqual(res["bucket"], "WAITING_ON_THEM")
+        self.assertIsNone(res["bot_feedback"])
+
+    def test_unknown_bot_comment_is_soft_hint_only(self):
+        pr = _pr(comments={"nodes": [
+            {"author": {"__typename": "Bot", "login": "gas-reporter"}, "body": "Gas +4% on settle()", "createdAt": _iso(H1_AGO)}
+        ]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertEqual(res["bucket"], "WAITING_ON_THEM")
+        self.assertEqual(res["bot_feedback"]["login"], "gas-reporter")
+        self.assertTrue(res["bot_feedback"]["at"].endswith("Z"))
+
+    def test_unknown_bot_comment_before_commit_no_hint(self):
+        pr = _pr(comments={"nodes": [
+            {"author": {"__typename": "Bot", "login": "gas-reporter"}, "body": "old", "createdAt": _iso(H4_AGO)}
+        ]})
+        self.assertIsNone(core.bucket_pr(pr, "me", ignore_bots=True)["bot_feedback"])
+
+
+class TestCISummary(unittest.TestCase):
+    def _with_ci(self, nodes, total=None, **pr_overrides):
+        commit = {"committedDate": _iso(H3_AGO), "statusCheckRollup": {
+            "state": "PENDING",
+            "contexts": {"totalCount": len(nodes) if total is None else total, "nodes": nodes},
+        }}
+        return _pr(commits={"nodes": [{"commit": commit}]}, **pr_overrides)
+
+    def test_counts_and_exclusions(self):
+        nodes = [
+            {"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"},
+            {"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"},
+            {"__typename": "CheckRun", "conclusion": "FAILURE", "status": "COMPLETED"},
+            {"__typename": "CheckRun", "conclusion": "SKIPPED", "status": "COMPLETED"},
+            {"__typename": "CheckRun", "conclusion": "NEUTRAL", "status": "COMPLETED"},
+            {"__typename": "CheckRun", "conclusion": None, "status": "IN_PROGRESS"},
+            {"__typename": "StatusContext", "state": "SUCCESS"},
+            {"__typename": "StatusContext", "state": "ERROR"},
+        ]
+        res = core.bucket_pr(self._with_ci(nodes), "me", ignore_bots=True)
+        self.assertEqual(res["ci_state"], "FAILURE")
+        self.assertEqual((res["ci_passed"], res["ci_failed"], res["ci_pending"], res["ci_total"]), (3, 2, 1, 6))
+        self.assertFalse(res["ci_partial"])
+
+    def test_all_passing(self):
+        nodes = [{"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"}] * 4
+        res = core.bucket_pr(self._with_ci(nodes), "me", ignore_bots=True)
+        self.assertEqual(res["ci_state"], "SUCCESS")
+        self.assertEqual(res["ci_total"], 4)
+
+    def test_pending(self):
+        nodes = [
+            {"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"},
+            {"__typename": "CheckRun", "conclusion": None, "status": "QUEUED"},
+        ]
+        self.assertEqual(core.bucket_pr(self._with_ci(nodes), "me", ignore_bots=True)["ci_state"], "PENDING")
+
+    def test_no_checks_on_first_timer_fork_awaits_approval(self):
+        pr = _pr(authorAssociation="FIRST_TIME_CONTRIBUTOR", isCrossRepository=True)
+        self.assertEqual(core.bucket_pr(pr, "me", ignore_bots=True)["ci_state"], "AWAITING_APPROVAL")
+
+    def test_no_checks_for_regular_contributor_is_none(self):
+        pr = _pr(authorAssociation="CONTRIBUTOR")
+        self.assertEqual(core.bucket_pr(pr, "me", ignore_bots=True)["ci_state"], "NONE")
+
+    def test_action_required_only_awaits_approval(self):
+        nodes = [{"__typename": "CheckRun", "conclusion": "ACTION_REQUIRED", "status": "COMPLETED"}] * 2
+        res = core.bucket_pr(self._with_ci(nodes), "me", ignore_bots=True)
+        self.assertEqual(res["ci_state"], "AWAITING_APPROVAL")
+        self.assertEqual(res["ci_failed"], 0)
+
+    def test_ci_not_fetched_is_unknown(self):
+        pr = _pr(commits={"nodes": [{"commit": {"committedDate": _iso(H3_AGO)}}]})
+        res = core.bucket_pr(pr, "me", ignore_bots=True)
+        self.assertIsNone(res["ci_state"])
+        self.assertIsNone(res["ci_total"])
+
+    def test_partial_when_more_than_fetched(self):
+        nodes = [{"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"}] * 50
+        self.assertTrue(core.bucket_pr(self._with_ci(nodes, total=63), "me", ignore_bots=True)["ci_partial"])
+
+    def test_ci_never_changes_bucket(self):
+        failing = [{"__typename": "CheckRun", "conclusion": "FAILURE", "status": "COMPLETED"}] * 3
+        approved = {"nodes": [{"author": {"login": "rev"}, "state": "APPROVED", "submittedAt": _iso(H1_AGO)}]}
+        self.assertEqual(core.bucket_pr(self._with_ci(failing), "me", ignore_bots=True)["bucket"], "WAITING_ON_THEM")
+        self.assertEqual(
+            core.bucket_pr(self._with_ci(failing, reviews=approved), "me", ignore_bots=True)["bucket"],
+            "PROBABLY_FINE",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

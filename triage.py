@@ -91,7 +91,48 @@ def _print_header(title: str) -> None:
     click.echo(_c(f"  {'─' * 60}", DIM))
 
 
-def _print_pr_bucket(bucket_name: str, items: list[dict], color: str) -> None:
+def _is_external(repo: str, username: str) -> bool:
+    return not username or repo.split("/", 1)[0].lower() != username.lower()
+
+
+def _ci_text(pr: dict) -> str:
+    state = pr.get("ci_state")
+    if not state:
+        return ""
+    passed, failed = pr.get("ci_passed", 0), pr.get("ci_failed", 0)
+    pending, total = pr.get("ci_pending", 0), pr.get("ci_total", 0)
+    more = "+" if pr.get("ci_partial") else ""
+    if state == "NONE":
+        return "no CI"
+    if state == "AWAITING_APPROVAL":
+        return "not run yet (may need maintainer approval)"
+    if failed:
+        return f"{passed}/{total}{more} passing, {failed} failing"
+    if pending:
+        return f"{passed}/{total}{more} passing, {pending} running"
+    return f"all {total}{more} passing"
+
+
+def _link_warning(item: dict, merged: bool = False) -> str:
+    reason = item.get("closing_link_reason")
+    if reason == "non_default_base":
+        return (
+            f"! Targets '{item.get('base_branch')}', not '{item.get('default_branch')}': "
+            "closing keywords are ignored. Ask the maintainer to link the issue manually."
+        )
+    if merged:
+        return "! Merged without a linked issue: points may not settle. Raise it in the Drips Discord."
+    if reason == "keyword_not_linked":
+        return "! Closing keyword found but GitHub linked no issue: check the issue number."
+    suggestions = item.get("suggested_close_issues") or []
+    if suggestions:
+        joined = " or ".join(f"Closes #{n}" for n in suggestions)
+        prefix = "pick one: " if item.get("suggestion_confidence") == "ambiguous" else "suggest: "
+        return f"! No linked issue. {prefix}{joined}"
+    return "! No linked issue: add 'Closes #<issue>' to the PR description."
+
+
+def _print_pr_bucket(bucket_name: str, items: list[dict], color: str, username: str = "") -> None:
     label = {
         "NEEDS_YOU": "⚡ Needs You",
         "WAITING_ON_THEM": "⏳ Waiting on Them",
@@ -139,6 +180,21 @@ def _print_pr_bucket(bucket_name: str, items: list[dict], color: str) -> None:
                 + " " + age + "  "
                 + _c(f"\"{pr['their_last_comment_body']}\"", style + DIM)
             )
+
+        if pr.get("bot_review_actionable"):
+            what = "requested changes" if pr.get("bot_review_reason") == "changes_requested" else "left an unresolved review comment"
+            click.echo(_c(f"    Bot: @{pr.get('bot_review_author')} {what} after your last push", style + RED))
+        elif pr.get("bot_feedback"):
+            fb = pr["bot_feedback"]
+            click.echo(_c(f"    Bot note: @{fb.get('login')} \"{fb.get('body')}\"", style + DIM))
+
+        ci = _ci_text(pr)
+        if ci and pr.get("ci_state") != "SUCCESS":
+            ci_color = RED if pr.get("ci_state") == "FAILURE" else (GREEN if pr.get("ci_state") == "SUCCESS" else YELLOW)
+            click.echo(_c(f"    CI: {ci}", style + ci_color))
+
+        if pr.get("has_closing_link") is False and _is_external(pr["repo"], username):
+            click.echo(_c(f"    {_link_warning(pr)}", style + YELLOW))
 
 
 def _print_issues(issues: list[dict]) -> None:
@@ -214,7 +270,7 @@ def _print_issues(issues: list[dict]) -> None:
         click.echo(_c(f"  → {i['url']}", DIM))
 
 
-def _print_claims(claims: list[dict]) -> None:
+def _print_claims(claims: list[dict], username: str = "") -> None:
     _print_header("🏆 Ready to Claim  (merged in last 14 days)")
 
     if not claims:
@@ -232,6 +288,8 @@ def _print_claims(claims: list[dict]) -> None:
             + age
         )
         click.echo(_c(f"  {c['url']}", DIM))
+        if c.get("points_at_risk") and _is_external(c["repo"], username):
+            click.echo(_c(f"  {_link_warning(c, merged=True)}", RED))
 
 
 def _print_fork_report(fork_report: list[dict]) -> None:
@@ -285,6 +343,10 @@ def _print_summary(summary: dict) -> None:
         _c(f"🏆 {summary['ready_to_claim']} ready to claim", MAGENTA),
         _c(f"🍴 {summary['repos_need_fork']} repos need fork", YELLOW if summary["repos_need_fork"] else DIM),
     ]
+    if summary.get("unlinked_prs"):
+        parts.append(_c(f"🔗 {summary['unlinked_prs']} PRs missing a linked issue", YELLOW))
+    if summary.get("points_at_risk"):
+        parts.append(_c(f"⚠ {summary['points_at_risk']} merged PRs with points at risk", RED))
     click.echo("  " + "   ".join(parts))
     click.echo()
 
@@ -387,15 +449,15 @@ def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, 
     # --- Formatted output ---
     if mode in ("all", "prs"):
         _print_header("Pull Requests")
-        _print_pr_bucket("NEEDS_YOU", data["prs"]["NEEDS_YOU"], RED)
-        _print_pr_bucket("WAITING_ON_THEM", data["prs"]["WAITING_ON_THEM"], YELLOW)
-        _print_pr_bucket("PROBABLY_FINE", data["prs"]["PROBABLY_FINE"], GREEN)
+        _print_pr_bucket("NEEDS_YOU", data["prs"]["NEEDS_YOU"], RED, data.get("username", ""))
+        _print_pr_bucket("WAITING_ON_THEM", data["prs"]["WAITING_ON_THEM"], YELLOW, data.get("username", ""))
+        _print_pr_bucket("PROBABLY_FINE", data["prs"]["PROBABLY_FINE"], GREEN, data.get("username", ""))
 
     if mode in ("all", "issues"):
         _print_issues(data["unlinked_issues"])
 
     if mode in ("all", "claims"):
-        _print_claims(data["claims"])
+        _print_claims(data["claims"], data.get("username", ""))
 
     if mode in ("all", "forks"):
         _print_fork_report(data["fork_report"])
