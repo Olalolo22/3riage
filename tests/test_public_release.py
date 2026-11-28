@@ -476,7 +476,7 @@ class TestCLIAndPackagingSync(unittest.TestCase):
 
     def test_user_facing_text_has_no_hardcoded_thresholds_or_drips_only_wording(self):
         js = (ROOT_DIR / "static" / "main.js").read_text(encoding="utf-8")
-        for stale in ("6 of 10", "up to 40", "first 100", "Drips can settle", "Drips Discord"):
+        for stale in ("6 of 10", "up to 40", "first 100", "Drips can settle", "Drips Discord", "Blast Radius"):
             self.assertNotIn(stale, js, stale)
         cli = (ROOT_DIR / "triage.py").read_text(encoding="utf-8")
         self.assertNotIn("Drips Discord", cli)

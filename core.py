@@ -1019,7 +1019,7 @@ def _assignment_check(pr: dict, author_lo: str) -> tuple[str, list[str], list[st
 
 def evaluate_incoming_pr(pr: dict, me: str, settings: dict | None = None) -> dict | None:
     """
-    Score one incoming PR on Kaycee's four checks (assignment, blast radius,
+    Score one incoming PR on Kaycee's four checks (assignment, change size,
     linked issue, CI ratio) plus first-timer and sensitive-file signals.
     Returns None for PRs that should not be shown (your own, or bot-authored).
     settings: output of maintainer_settings(); defaults when omitted.
