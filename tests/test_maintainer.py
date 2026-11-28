@@ -199,5 +199,45 @@ class TestScopeAndBuckets(unittest.TestCase):
         self.assertFalse(s["repos_truncated"])
 
 
+class TestConfigurableRules(unittest.TestCase):
+    def test_settings_defaults_and_clamping(self):
+        d = core.maintainer_settings()
+        self.assertEqual((d["ci_min_ratio"], d["large_diff_lines"]), (0.6, 1000))
+        self.assertEqual(core.maintainer_settings(0.8, 300)["ci_min_ratio"], 0.8)
+        for bad_ratio in (1.5, -0.1, "abc"):
+            self.assertEqual(core.maintainer_settings(bad_ratio, None)["ci_min_ratio"], 0.6)
+        for bad_lines in (5, 2_000_000, "x"):
+            self.assertEqual(core.maintainer_settings(None, bad_lines)["large_diff_lines"], 1000)
+        self.assertEqual(core.maintainer_settings(None, "500")["large_diff_lines"], 500)
+
+    def test_custom_large_diff_threshold(self):
+        pr = _incoming(additions=400, deletions=200)
+        self.assertFalse(core.evaluate_incoming_pr(pr, "m")["large_diff"])
+        self.assertTrue(core.evaluate_incoming_pr(pr, "m", core.maintainer_settings(None, 500))["large_diff"])
+
+    def test_custom_ci_bar(self):
+        commits = TestCIAndLink()._ci(7, 3)
+        pr = _incoming(commits=commits)
+        self.assertFalse(core.evaluate_incoming_pr(pr, "m")["ci_below_threshold"])        # 70% >= 60%
+        strict = core.maintainer_settings(0.8, None)
+        item = core.evaluate_incoming_pr(pr, "m", strict)                                 # 70% < 80%
+        self.assertTrue(item["ci_below_threshold"])
+        self.assertEqual(item["bucket"], "BOUNCE_BACK")
+
+    def test_run_maintainer_triage_reports_settings_used(self):
+        client = MagicMock()
+        client.username = "maint"
+        client.get_maintained_repos_with_open_prs.return_value = (["org/app"], False)
+        client.get_incoming_prs.return_value = [_incoming(additions=700)]
+        data = core.run_maintainer_triage(client, large_diff_lines=500, ci_min_ratio=0.75)
+        self.assertEqual(data["settings"]["large_diff_lines"], 500)
+        self.assertEqual(data["settings"]["ci_min_ratio"], 0.75)
+        self.assertTrue(data["maintainer"]["REVIEW_NOW"][0]["large_diff"])
+
+    def test_files_scanned_reported(self):
+        item = core.evaluate_incoming_pr(_incoming(changedFiles=140), "m")
+        self.assertEqual(item["files_scanned"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

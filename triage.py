@@ -122,7 +122,7 @@ def _link_warning(item: dict, merged: bool = False) -> str:
             "closing keywords are ignored. Ask the maintainer to link the issue manually."
         )
     if merged:
-        return "! Merged without a linked issue: points may not settle. Raise it in the Drips Discord."
+        return "! Merged without a linked issue: Wave/bounty points may not settle. Raise it with the maintainers or in the program's channel."
     if reason == "keyword_not_linked":
         return "! Closing keyword found but GitHub linked no issue: check the issue number."
     suggestions = item.get("suggested_close_issues") or []
@@ -391,6 +391,13 @@ def _print_maintainer(data: dict) -> None:
     click.echo()
     note = "  (repo cap reached, showing most recently active)" if s.get("repos_truncated") else ""
     click.echo(_c(f"  {s.get('repos_scanned', 0)} repos scanned{note}", DIM))
+    cfg = data.get("settings") or {}
+    if cfg:
+        click.echo(_c(
+            f"  Rules: CI must pass {round(cfg['ci_min_ratio'] * 100)}% of finished checks, "
+            f"large diff = over {cfg['large_diff_lines']:,} lines. Change with --ci-min / --large-diff.",
+            DIM,
+        ))
     click.echo()
 
 
@@ -426,8 +433,13 @@ def _resolve_cli_auth(ignore_bots: bool = True) -> tuple[GitHubClient, str]:
 @click.option("--forks", "run_forks", is_flag=True, help="Run interactive fork assistant after report.")
 @click.option("--claims-days", default=14, show_default=True, help="How many days back to look for merged PRs.")
 @click.option("--external-only", is_flag=True, help="Exclude PRs and issues in repositories you own.")
+@click.option("--ci-min", default=None, type=click.IntRange(0, 100),
+              help="Maintainer mode: minimum %% of finished CI checks that must pass (default 60).")
+@click.option("--large-diff", default=None, type=click.IntRange(10, 1_000_000),
+              help="Maintainer mode: changed lines above which a PR counts as large (default 1000).")
 @click.pass_context
-def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days, external_only):
+def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, claims_days, external_only,
+        ci_min, large_diff):
     """
     3riage — GitHub contribution triage tool.
 
@@ -471,7 +483,13 @@ def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, 
 
     if mode == "maintainer":
         try:
-            data = run_maintainer_triage(client, ignore_repos=ignore_repos, only_repos=only_repos)
+            data = run_maintainer_triage(
+                client,
+                ignore_repos=ignore_repos,
+                only_repos=only_repos,
+                ci_min_ratio=ci_min / 100.0 if ci_min is not None else None,
+                large_diff_lines=large_diff,
+            )
         except Exception as e:
             click.echo(_c(f"\nError fetching data: {e}", RED), err=True)
             sys.exit(1)
