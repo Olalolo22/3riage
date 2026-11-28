@@ -1139,7 +1139,7 @@
       unverifiable: ['var(--color-yellow)', "Can't verify: no linked issue"],
     }[item.assignment_status] || ['', item.assignment_status || 'Unknown'];
 
-    const blast = `+${formatCount(item.additions)} / -${formatCount(item.deletions)} · ${formatCount(item.changed_files)} file${item.changed_files === 1 ? '' : 's'}`;
+    const changeSize = `+${formatCount(item.additions)} / -${formatCount(item.deletions)} · ${formatCount(item.changed_files)} file${item.changed_files === 1 ? '' : 's'}`;
     let linkText = linkedIssueLabel(item);
     if (item.has_closing_link === false && item.closing_link_reason === 'non_default_base') {
       linkText = `None (targets ${item.base_branch}, keywords ignored)`;
@@ -1180,7 +1180,7 @@
         <div class="detail-section-title">Merge Checklist</div>
         <div class="meta-grid">
           ${metaItem('Assignment', assignment[1], assignment[0])}
-          ${metaItem('Blast Radius', blast, item.large_diff ? 'var(--color-red)' : '')}
+          ${metaItem('Change Size', changeSize, item.large_diff ? 'var(--color-red)' : '')}
           ${metaItem('Linked Issue', linkText, item.has_closing_link === false ? 'var(--color-yellow)' : '')}
           ${metaItem('CI Checks', ciText, ciStyle)}
           ${metaItem('Author', `@${item.author} · ${assoc}`, item.is_first_timer ? 'var(--color-yellow)' : '')}
