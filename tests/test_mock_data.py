@@ -117,6 +117,24 @@ class TestMockData(unittest.TestCase):
             for n in p["suggested_close_issues"]:
                 self.assertIn((p["repo"], n), assigned)
 
+    def test_maintainer_demo_covers_every_bucket_and_check(self):
+        from mock_data import get_mock_maintainer_data
+        m = get_mock_maintainer_data()
+        self.assertEqual(m["view"], "maintainer")
+        for bucket in ("SUSPICIOUS", "BOUNCE_BACK", "REVIEW_NOW", "DRAFTS"):
+            self.assertTrue(m["maintainer"][bucket], bucket)
+        items = [i for b in m["maintainer"].values() for i in b]
+        statuses = {i["assignment_status"] for i in items}
+        self.assertTrue({"assigned", "not_assigned", "partly_assigned", "unverifiable"} <= statuses)
+        self.assertTrue(any(i["large_diff"] for i in items))
+        self.assertTrue(any(i["sensitive_files"] for i in items))
+        self.assertTrue(any(i["ci_below_threshold"] for i in items))
+        self.assertTrue(any(i["is_first_timer"] for i in items))
+        self.assertFalse(any(i["files_partial"] for i in items))
+        self.assertTrue(all(i["author"] != m["username"] for i in items))
+        s = m["summary"]
+        self.assertEqual(s["suspicious"], len(m["maintainer"]["SUSPICIOUS"]))
+
     def test_new_summary_counters(self):
         s = self.data["summary"]
         self.assertEqual(s["unlinked_prs"], sum(1 for p in self._all_prs() if p["has_closing_link"] is False))

@@ -8,6 +8,7 @@ Usage:
   3riage --mode prs              # PR buckets only
   3riage --mode issues           # unlinked issues only
   3riage --mode claims           # recently merged, ready to claim
+  3riage --mode maintainer       # incoming PRs on repos you maintain
   3riage --forks                 # fork assistant
   3riage --repo owner/r          # filter to one repo
   3riage --json                  # machine-readable JSON output
@@ -27,7 +28,7 @@ from tabulate import tabulate
 load_dotenv(".triage.env")
 
 from github_client import GitHubClient
-from core import run_triage
+from core import run_maintainer_triage, run_triage
 
 # ---------------------------------------------------------------------------
 # Colour helpers (no external dep — ANSI only)
@@ -352,6 +353,48 @@ def _print_summary(summary: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Maintainer Mode
+# ---------------------------------------------------------------------------
+
+_TONE = {"red": RED, "yellow": YELLOW, "green": GREEN}
+
+
+def _print_maintainer(data: dict) -> None:
+    _print_header("Incoming PRs on repos you maintain")
+    sections = [
+        ("SUSPICIOUS", "Suspicious  (check before reading any code)", RED),
+        ("BOUNCE_BACK", "Bounce back  (contributor's move)", YELLOW),
+        ("REVIEW_NOW", "Review now  (your move)", GREEN),
+        ("DRAFTS", "Drafts", DIM),
+    ]
+    for key, label, color in sections:
+        items = data["maintainer"].get(key, [])
+        click.echo()
+        click.echo(_c(f"  {label} ({len(items)})", BOLD + color))
+        if not items:
+            click.echo(_c("    none", DIM))
+            continue
+        for pr in items:
+            click.echo()
+            click.echo(_c(f"    [{pr['repo']} #{pr['number']}]", CYAN) + "  " + _c(pr["title"], BOLD)
+                       + "  " + _c(f"@{pr['author']}", MAGENTA) + " " + _age_badge(pr.get("created_days_ago"), pr.get("created_at")))
+            click.echo(_c(f"    {pr['url']}", DIM))
+            n_files = pr['changed_files']
+            diff = f"+{pr['additions']:,} / -{pr['deletions']:,} in {n_files} file{'' if n_files == 1 else 's'}"
+            ci = _ci_text(pr)
+            click.echo(_c(f"    {diff}" + (f"  ·  CI: {ci}" if ci else ""), DIM))
+            pills = "  ".join(_c(r["label"], _TONE.get(r["tone"], WHITE)) for r in pr.get("reasons", []))
+            click.echo(f"    {pills}")
+            if pr.get("sensitive_files"):
+                click.echo(_c(f"    Sensitive: {', '.join(pr['sensitive_files'][:5])}", RED))
+    s = data.get("summary", {})
+    click.echo()
+    note = "  (repo cap reached, showing most recently active)" if s.get("repos_truncated") else ""
+    click.echo(_c(f"  {s.get('repos_scanned', 0)} repos scanned{note}", DIM))
+    click.echo()
+
+
+# ---------------------------------------------------------------------------
 # Auth resolution helper
 # ---------------------------------------------------------------------------
 
@@ -374,8 +417,8 @@ def _resolve_cli_auth(ignore_bots: bool = True) -> tuple[GitHubClient, str]:
 # ---------------------------------------------------------------------------
 
 @click.group(invoke_without_command=True)
-@click.option("--mode", type=click.Choice(["all", "prs", "issues", "claims", "forks"]), default="all",
-              help="What to show: all (default), prs, issues, claims, forks.")
+@click.option("--mode", type=click.Choice(["all", "prs", "issues", "claims", "forks", "maintainer"]), default="all",
+              help="What to show: all (default), prs, issues, claims, forks, or maintainer (incoming PRs on your repos).")
 @click.option("--repo", default=None, help="Filter to a single repo (owner/repo).")
 @click.option("--json", "output_json", is_flag=True, help="Output raw JSON instead of formatted text.")
 @click.option("--include-drafts", is_flag=True, default=None, help="Include draft PRs (overrides TRIAGE_INCLUDE_DRAFTS).")
@@ -425,6 +468,18 @@ def cli(ctx, mode, repo, output_json, include_drafts, min_age_hours, run_forks, 
     if not output_json:
         click.echo(_c(f"\n  3riage  @{username}", BOLD + CYAN))
         click.echo(_c("  Fetching from GitHub…", DIM))
+
+    if mode == "maintainer":
+        try:
+            data = run_maintainer_triage(client, ignore_repos=ignore_repos, only_repos=only_repos)
+        except Exception as e:
+            click.echo(_c(f"\nError fetching data: {e}", RED), err=True)
+            sys.exit(1)
+        if output_json:
+            click.echo(json.dumps(data, indent=2, default=str))
+        else:
+            _print_maintainer(data)
+        return
 
     try:
         data = run_triage(

@@ -56,6 +56,7 @@ Use a read-only token. The local fork action uses your local `gh` CLI separately
 3riage --mode issues      # unlinked issues & bounty bids only
 3riage --mode claims      # recently merged, ready to claim
 3riage --mode forks       # fork status report
+3riage --mode maintainer  # incoming PRs on repos you maintain
 3riage --forks            # interactive fork assistant
 3riage --repo owner/repo  # filter to one repo
 3riage --external-only    # hide PRs, issues, and claims in your own repos
@@ -86,6 +87,33 @@ GitHub reviews are evaluated **per reviewer**. If Reviewer A requests changes an
 - **No linked issue:** if GitHub hasn't linked your PR to an issue it closes, 3riage says why (no keyword, keyword but no link, or a PR into a non-default branch where keywords are ignored) and, when you're assigned to an issue in the same repo, gives a one-click `Closes #N` to copy.
 - **Points at risk:** merged PRs with no linked issue are flagged on the claims shelf so you can raise them on Discord before the wave closes.
 - **CI ratio:** shown for information only. CI never moves a PR between buckets.
+
+## Maintainer Mode
+
+Flip the **Contributor | Maintainer** toggle in the top bar (or run `3riage --mode maintainer`) to see PRs other people opened on repos you can merge into. It is still read-only: 3riage never comments, labels, closes or merges anything.
+
+Every incoming PR is checked the way a busy Wave maintainer checks it:
+
+1. **Was the author assigned** to the issue this PR closes?
+2. **How big is the change?** Over 1,000 changed lines is flagged.
+3. **Is the issue linked** with `Closes #N`?
+4. **How much CI passes?** Below 6 of 10 finished checks gets bounced.
+
+It also flags first-time contributors and changes to dependency, install or CI files, where risky code usually hides.
+
+PRs are sorted by who has the next move:
+
+```
+SUSPICIOUS   — Author wasn't assigned, or there's no linked issue AND the PR is big,
+               from a first-timer, or touches sensitive files. Check before reading code.
+BOUNCE_BACK  — Missing a linked issue, or CI below the bar. Contributor's move.
+REVIEW_NOW   — Assigned, linked, CI healthy. Your move.
+DRAFTS       — Not ready yet.
+```
+
+Suspicious and bounce-back PRs come with a suggested reply you can copy and paste on the PR yourself.
+
+Scope: public repos where you have write, maintain or admin access and at least one open PR, up to 40 of the most recently active. PRs from bots and from you are hidden.
 
 *Thanks to Kaycee, a Drips Wave maintainer, whose walkthrough feedback shaped these checks.*
 

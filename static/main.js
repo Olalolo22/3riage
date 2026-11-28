@@ -21,6 +21,12 @@
   try {
     externalOnly = localStorage.getItem('3riage-external-only') === 'true';
   } catch (e) {}
+  // 'contributor' (your PRs, bids, claims) or 'maintainer' (incoming PRs on repos you maintain)
+  let currentView = 'contributor';
+  let maintainerData = null;
+  try {
+    if (localStorage.getItem('3riage-view') === 'maintainer') currentView = 'maintainer';
+  } catch (e) {}
 
   // DOM Elements
   const statusUser = document.getElementById('status-user');
@@ -41,6 +47,9 @@
   const emptyDetail = document.getElementById('empty-detail');
   const detailContent = document.getElementById('detail-content');
   const filterTabs = document.querySelectorAll('.filter-tab');
+  const contributorFilters = document.getElementById('view-filters');
+  const maintainerFilters = document.getElementById('maintainer-filters');
+  const modeButtons = document.querySelectorAll('.mode-btn');
   const mainContent = document.getElementById('main-content');
   const btnBackToList = document.getElementById('btn-back-to-list');
   const demoBanner = document.getElementById('demo-banner');
@@ -61,6 +70,8 @@
     xCircle: '<circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line>',
     alert: '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>',
     link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>',
+    undo: '<polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path>',
+    edit: '<path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>',
     copy: '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>',
     cpu: '<rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line>',
   };
@@ -192,6 +203,79 @@
   }
 
   // -------------------------------------------------------------------------
+  // Maintainer Mode helpers
+  // -------------------------------------------------------------------------
+
+  const MAINT_BUCKET_PILLS = {
+    SUSPICIOUS: ['pill-red', 'Suspicious'],
+    BOUNCE_BACK: ['pill-yellow', 'Bounce back'],
+    REVIEW_NOW: ['pill-green', 'Review now'],
+    DRAFTS: ['pill-muted', 'Draft'],
+  };
+
+  function toneClass(tone) {
+    return { red: 'pill-red', yellow: 'pill-yellow', green: 'pill-green' }[tone] || 'pill-muted';
+  }
+
+  function hasReason(item, code) {
+    return (item.reasons || []).some(r => r.code === code);
+  }
+
+  function formatCount(n) {
+    return Number(n || 0).toLocaleString('en-US');
+  }
+
+  function incomingWhyLines(item) {
+    const who = `@${escapeHtml(item.author)}`;
+    const lines = [];
+    const notOn = escapeHtml((item.not_assigned_on || []).join(', '));
+    const yesOn = escapeHtml((item.assigned_on || []).join(', '));
+    if (item.assignment_status === 'not_assigned') {
+      lines.push(`${who} was never assigned to ${notOn}.`);
+    } else if (item.assignment_status === 'partly_assigned') {
+      lines.push(`${who} is assigned to ${yesOn} but not to ${notOn}.`);
+    } else if (item.assignment_status === 'unverifiable') {
+      lines.push(`There is no linked issue, so you can't check whether ${who} was assigned.`);
+    }
+    if (item.large_diff) {
+      lines.push(`Large change: +${formatCount(item.additions)} / -${formatCount(item.deletions)} across ${formatCount(item.changed_files)} files.`);
+    }
+    if ((item.sensitive_files || []).length) {
+      lines.push('It touches dependency, install or CI files, where risky code usually hides.');
+    }
+    if (item.is_first_timer) lines.push('This is their first contribution to the repo.');
+    if (item.ci_below_threshold) {
+      const done = (Number(item.ci_passed) || 0) + (Number(item.ci_failed) || 0);
+      lines.push(`Only ${Number(item.ci_passed) || 0} of ${done} finished checks pass. Your bar is 6 of 10.`);
+    } else if (item.ci_state === 'AWAITING_APPROVAL') {
+      lines.push("CI hasn't run yet. Workflows may be waiting for your approval.");
+    }
+    if (!lines.length) {
+      lines.push(item.bucket === 'DRAFTS'
+        ? 'The author marked this as a draft.'
+        : `${who} is assigned to ${yesOn}, the issue is linked, and CI looks healthy.`);
+    }
+    return lines;
+  }
+
+  function incomingSuggestedReply(item) {
+    if (item.bucket !== 'SUSPICIOUS' && item.bucket !== 'BOUNCE_BACK') return '';
+    const asks = [];
+    const notAssigned = item.assignment_status === 'not_assigned' || item.assignment_status === 'partly_assigned';
+    if (notAssigned) {
+      asks.push("This issue isn't assigned to you, so I can't review it yet. Please ask to be assigned on the issue first.");
+    }
+    if (item.has_closing_link === false) {
+      asks.push('Please add `Closes #<issue number>` to the description so this PR links to the issue you were assigned.');
+    }
+    if (item.ci_below_threshold) {
+      asks.push(`${Number(item.ci_failed) || 0} checks are failing. Please get CI passing.`);
+    }
+    if (!asks.length) return '';
+    return `Thanks for the PR! ${asks.join(' ')}${notAssigned ? '' : " I'll review once that's done."}`;
+  }
+
+  // -------------------------------------------------------------------------
   // Lifecycle & Fetching
   // -------------------------------------------------------------------------
 
@@ -254,16 +338,19 @@
     try {
       const params = new URLSearchParams(window.location.search);
       const isForcedDemo = forceDemo || params.get('demo') === 'true' || params.get('demo') === '1';
-      const url = forceRefresh
-        ? `/api/refresh${isForcedDemo ? '?demo=true' : ''}`
-        : `/api/triage${isForcedDemo ? '?demo=true' : ''}`;
+      const qs = new URLSearchParams();
+      if (isForcedDemo) qs.set('demo', 'true');
+      if (currentView === 'maintainer') qs.set('view', 'maintainer');
+      const query = qs.toString() ? `?${qs.toString()}` : '';
+      const url = forceRefresh ? `/api/refresh${query}` : `/api/triage${query}`;
       const method = forceRefresh ? 'POST' : 'GET';
       const { res, json } = await fetchJsonWithTimeout(url, { method }, 20000);
       if (requestGen !== loadGeneration) return;
 
       if (res.status === 401) {
         showToast((json && json.error) || 'GitHub session expired. Showing demo mode.', 6000);
-        const fallback = await fetchJsonWithTimeout('/api/triage?demo=true', {}, 15000);
+        const fallbackUrl = currentView === 'maintainer' ? '/api/triage?demo=true&view=maintainer' : '/api/triage?demo=true';
+        const fallback = await fetchJsonWithTimeout(fallbackUrl, {}, 15000);
         if (requestGen !== loadGeneration) return;
         if (fallback.json && fallback.json.status === 'ok') {
           applyTriageResponse(fallback.json);
@@ -311,8 +398,16 @@
     }
   }
 
+  function activeData() {
+    return currentView === 'maintainer' ? maintainerData : triageData;
+  }
+
   function applyTriageResponse(json) {
-    triageData = json.data;
+    if (json.data && json.data.view === 'maintainer') {
+      maintainerData = json.data;
+    } else {
+      triageData = json.data;
+    }
     isDemoMode = !!json.is_demo;
     authMode = json.auth_mode || (isDemoMode ? 'demo' : 'env');
     oauthConfigured = !!json.oauth_configured;
@@ -333,9 +428,53 @@
   }
 
   function isOwnRepoItem(item) {
-    if (!triageData || !triageData.username || !item || !item.repo) return false;
+    const data = activeData();
+    if (!data || !data.username || !item || !item.repo) return false;
     const owner = item.repo.split('/')[0].toLowerCase();
-    return owner === triageData.username.toLowerCase();
+    return owner === data.username.toLowerCase();
+  }
+
+  function getMaintainerCollections() {
+    const m = (maintainerData && maintainerData.maintainer) || {};
+    const tag = (arr, category) => (arr || []).map(p => ({ ...p, category }));
+    return {
+      suspicious: tag(m.SUSPICIOUS, 'suspicious'),
+      bounce: tag(m.BOUNCE_BACK, 'bounce_back'),
+      review: tag(m.REVIEW_NOW, 'review_now'),
+      drafts: tag(m.DRAFTS, 'drafts'),
+    };
+  }
+
+  function applyViewChrome() {
+    const isMaint = currentView === 'maintainer';
+    modeButtons.forEach(btn => {
+      const on = btn.getAttribute('data-view') === currentView;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    if (contributorFilters) contributorFilters.classList.toggle('hidden', isMaint);
+    if (maintainerFilters) maintainerFilters.classList.toggle('hidden', !isMaint);
+    if (btnExternalOnly) btnExternalOnly.classList.toggle('hidden', isMaint);
+    activeFilter = isMaint ? 'm_all' : 'all';
+    filterTabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-filter') === activeFilter));
+  }
+
+  function switchView(view) {
+    if (view === currentView) return;
+    currentView = view;
+    try {
+      localStorage.setItem('3riage-view', view);
+    } catch (e) {}
+    applyViewChrome();
+    selectedItem = null;
+    if (mainContent) mainContent.classList.remove('viewing-detail');
+    if (activeData()) {
+      updateHeader();
+      renderFeed();
+      if (flatItemsList.length > 0) selectItem(flatItemsList[0]);
+      else renderDetail(null);
+    }
+    loadTriage(false);
   }
 
   function getScopedCollections() {
@@ -359,7 +498,8 @@
   }
 
   function updateHeader() {
-    if (!triageData) return;
+    const data = activeData();
+    if (!data) return;
     connectionStatus.classList.remove('offline');
 
     if (demoBanner) {
@@ -371,9 +511,23 @@
     }
 
     if (isDemoMode) {
-      statusUser.textContent = `@${triageData.username} (sample)`;
+      statusUser.textContent = `@${data.username} (sample)`;
     } else {
-      statusUser.textContent = `@${triageData.username}`;
+      statusUser.textContent = `@${data.username}`;
+    }
+
+    if (currentView === 'maintainer') {
+      const m = getMaintainerCollections();
+      const setCount = (id, n) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = n;
+      };
+      setCount('m-count-all', m.suspicious.length + m.bounce.length + m.review.length + m.drafts.length);
+      setCount('m-count-suspicious', m.suspicious.length);
+      setCount('m-count-bounce', m.bounce.length);
+      setCount('m-count-review', m.review.length);
+      setCount('m-count-drafts', m.drafts.length);
+      return;
     }
 
     const scoped = getScopedCollections();
@@ -408,9 +562,31 @@
   }
 
   function getFilteredItems() {
-    if (!triageData) return [];
+    if (!activeData()) return [];
 
     let items = [];
+    if (currentView === 'maintainer') {
+      const m = getMaintainerCollections();
+      const byFilter = {
+        m_all: [...m.suspicious, ...m.review, ...m.bounce, ...m.drafts],
+        m_suspicious: m.suspicious,
+        m_bounce_back: m.bounce,
+        m_review_now: m.review,
+        m_drafts: m.drafts,
+      };
+      items = byFilter[activeFilter] || byFilter.m_all;
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        items = items.filter(i =>
+          i.title.toLowerCase().includes(q) ||
+          i.repo.toLowerCase().includes(q) ||
+          (i.author || '').toLowerCase().includes(q) ||
+          String(i.number).includes(q)
+        );
+      }
+      return items;
+    }
+
     const scoped = getScopedCollections();
     const { prsNeedsYou, prsWaiting, prsFine, issues, claims } = scoped;
 
@@ -451,14 +627,23 @@
       needs_you: `${uiIcon('zap', 'icon-red', 12)} Needs Your Attention`,
       waiting: `${uiIcon('clock', 'icon-yellow', 12)} Waiting on Others`,
       issues: `${uiIcon('issue', 'icon-cyan', 12)} Unlinked Bids & Issues`,
-      claims: `${uiIcon('award', 'icon-purple', 12)} Ready to Claim`
+      claims: `${uiIcon('award', 'icon-purple', 12)} Ready to Claim`,
+      m_all: 'Incoming PRs',
+      m_suspicious: `${uiIcon('alert', 'icon-red', 12)} Suspicious`,
+      m_bounce_back: `${uiIcon('undo', 'icon-yellow', 12)} Bounce Back`,
+      m_review_now: `${uiIcon('checkCircle', 'icon-green', 12)} Review Now`,
+      m_drafts: `${uiIcon('edit', 'icon-muted', 12)} Drafts`
     };
     listTitle.innerHTML = titles[activeFilter] || 'Triage Feed';
 
     if (flatItemsList.length === 0) {
+      let emptyText = searchQuery ? 'No items match your search filter.' : 'No items in this view.';
+      if (!searchQuery && currentView === 'maintainer' && activeFilter === 'm_all') {
+        emptyText = 'No open PRs from other people on repos you maintain.<br><span style="font-size: 11px;">3riage checks public repos where you have write access (up to 40, most recently active first).</span>';
+      }
       listContainer.innerHTML = `
-        <div style="padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 12px;">
-          ${searchQuery ? 'No items match your search filter.' : 'No items in this view.'}
+        <div style="padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 12px; line-height: 1.6;">
+          ${emptyText}
         </div>
       `;
       return;
@@ -468,20 +653,24 @@
     let currentCategory = '';
 
     flatItemsList.forEach(item => {
-      if (activeFilter === 'all' && item.category !== currentCategory) {
+      if ((activeFilter === 'all' || activeFilter === 'm_all') && item.category !== currentCategory) {
         currentCategory = item.category;
         const labels = {
           needs_you: `${uiIcon('zap', 'icon-red', 11)} Needs You`,
           waiting: `${uiIcon('clock', 'icon-yellow', 11)} Waiting on Them`,
           probably_fine: `${uiIcon('checkCircle', 'icon-green', 11)} Probably Fine`,
           issues: `${uiIcon('issue', 'icon-cyan', 11)} Unlinked Issues & Bids`,
-          claims: `${uiIcon('award', 'icon-purple', 11)} Ready to Claim`
+          claims: `${uiIcon('award', 'icon-purple', 11)} Ready to Claim`,
+          suspicious: `${uiIcon('alert', 'icon-red', 11)} Suspicious`,
+          review_now: `${uiIcon('checkCircle', 'icon-green', 11)} Review Now`,
+          bounce_back: `${uiIcon('undo', 'icon-yellow', 11)} Bounce Back`,
+          drafts: `${uiIcon('edit', 'icon-muted', 11)} Drafts`
         };
         html += `<div class="list-section-header">${labels[currentCategory] || escapeHtml(currentCategory)}</div>`;
       }
 
       const isSelected = selectedItem && getItemId(selectedItem) === getItemId(item);
-      const isDimmed = item.is_dimmed || item.bucket === 'PROBABLY_FINE';
+      const isDimmed = item.is_dimmed || item.bucket === 'PROBABLY_FINE' || item.bucket === 'DRAFTS';
 
       let pillHtml = '';
       let ageText = '';
@@ -526,6 +715,16 @@
           pillHtml += ` <span class="pill pill-green">forked</span>`;
         }
         ageText = formatRelativeAge(item.my_last_comment_at, item.days_since_my_comment);
+      } else if (item.type === 'incoming_pr') {
+        const bucketPill = MAINT_BUCKET_PILLS[item.bucket] || ['pill-muted', item.bucket];
+        pillHtml = `<span class="pill ${bucketPill[0]}">${escapeHtml(bucketPill[1])}</span>`;
+        pillHtml += ` <span class="pill pill-muted">@${escapeHtml(item.author)}</span>`;
+        const flags = (item.reasons || []).filter(r => r.code !== 'assigned');
+        flags.slice(0, 3).forEach(r => {
+          pillHtml += ` <span class="pill ${toneClass(r.tone)}">${escapeHtml(r.label)}</span>`;
+        });
+        if (flags.length > 3) pillHtml += ` <span class="pill pill-muted">+${flags.length - 3}</span>`;
+        ageText = formatRelativeAge(item.created_at, item.created_days_ago);
       } else if (item.type === 'claim') {
         pillHtml = `<span class="pill pill-purple">ready to claim</span>`;
         if (item.points_at_risk && !isOwnRepoItem(item)) {
@@ -598,6 +797,8 @@
       renderIssueDetail(item);
     } else if (item.type === 'claim') {
       renderClaimDetail(item);
+    } else if (item.type === 'incoming_pr') {
+      renderIncomingDetail(item);
     }
 
     bindCopyButtons();
@@ -865,6 +1066,95 @@
     `;
   }
 
+  function renderIncomingDetail(item) {
+    const itemUrl = safeUrl(item.url);
+    const cards = {
+      SUSPICIOUS: ['border-red', `${uiIcon('alert', 'icon-red', 15)} Check This Before Reading Any Code`],
+      BOUNCE_BACK: ['border-yellow', `${uiIcon('undo', 'icon-yellow', 15)} Send It Back: Contributor's Move`],
+      REVIEW_NOW: ['border-green', `${uiIcon('checkCircle', 'icon-green', 15)} Ready for Your Review`],
+      DRAFTS: ['border-muted', `${uiIcon('edit', 'icon-muted', 15)} Draft: Not Ready Yet`],
+    };
+    const [border, headline] = cards[item.bucket] || cards.REVIEW_NOW;
+    const why = incomingWhyLines(item).join(' ');
+
+    const assignment = {
+      assigned: ['var(--color-green)', `Assigned (${(item.assigned_on || []).join(', ')})`],
+      partly_assigned: ['var(--color-red)', `Partly: yes on ${(item.assigned_on || []).join(', ')}, no on ${(item.not_assigned_on || []).join(', ')}`],
+      not_assigned: ['var(--color-red)', `Not assigned (${(item.not_assigned_on || []).join(', ')})`],
+      unverifiable: ['var(--color-yellow)', "Can't verify: no linked issue"],
+    }[item.assignment_status] || ['', item.assignment_status || 'Unknown'];
+
+    const blast = `+${formatCount(item.additions)} / -${formatCount(item.deletions)} · ${formatCount(item.changed_files)} file${item.changed_files === 1 ? '' : 's'}`;
+    let linkText = linkedIssueLabel(item);
+    if (item.has_closing_link === false && item.closing_link_reason === 'non_default_base') {
+      linkText = `None (targets ${item.base_branch}, keywords ignored)`;
+    }
+    const ciText = ciLabel(item) || 'Unknown';
+    const ciStyle = item.ci_below_threshold ? 'var(--color-red)' : ciColor(item);
+    const opened = formatDetailTimestamp(item.created_at, item.created_days_ago, 'Unknown');
+    const assoc = item.is_first_timer
+      ? 'First-time contributor'
+      : (item.author_association || 'NONE').toLowerCase().replace(/_/g, ' ');
+    const reply = incomingSuggestedReply(item);
+    const sensitive = item.sensitive_files || [];
+
+    const metaItem = (label, value, color) => `
+          <div class="meta-item">
+            <span class="meta-label">${label}</span>
+            <span class="meta-value"${color ? ` style="color: ${color};"` : ''}>${escapeHtml(value)}</span>
+          </div>`;
+
+    detailContent.innerHTML = `
+      <div class="detail-header">
+        <div class="detail-breadcrumb">
+          <span class="detail-repo-tag">${escapeHtml(item.repo)} #${Number(item.number)}</span>
+          <div class="detail-actions">
+            <button class="btn btn-secondary" data-copy-url="${escapeHtml(itemUrl)}" data-copy-msg="URL copied to clipboard">Copy Link</button>
+            <a href="${escapeHtml(itemUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary">Open PR ↗</a>
+          </div>
+        </div>
+        <h2 class="detail-title">${escapeHtml(item.title)}</h2>
+      </div>
+
+      <div class="decision-card ${border}">
+        <div class="decision-header">${headline}</div>
+        <div class="decision-subtext">${why}</div>
+      </div>
+
+      <div class="detail-section">
+        <div class="detail-section-title">Merge Checklist</div>
+        <div class="meta-grid">
+          ${metaItem('Assignment', assignment[1], assignment[0])}
+          ${metaItem('Blast Radius', blast, item.large_diff ? 'var(--color-red)' : '')}
+          ${metaItem('Linked Issue', linkText, item.has_closing_link === false ? 'var(--color-yellow)' : '')}
+          ${metaItem('CI Checks', ciText, ciStyle)}
+          ${metaItem('Author', `@${item.author} · ${assoc}`, item.is_first_timer ? 'var(--color-yellow)' : '')}
+          ${metaItem('Opened', opened.text, '')}
+        </div>
+      </div>
+
+      ${sensitive.length ? `
+        <div class="detail-section">
+          <div class="detail-section-title">Sensitive Files Changed</div>
+          <div class="feedback-quote sensitive-list">
+            ${sensitive.map(p => `<code>${escapeHtml(p)}</code>`).join('')}
+            ${item.files_partial ? '<div class="sensitive-note">Only the first 100 changed files were checked.</div>' : ''}
+          </div>
+        </div>
+      ` : ''}
+
+      ${reply ? `
+        <div class="detail-section">
+          <div class="detail-section-title">Suggested Reply</div>
+          <div class="feedback-quote">${escapeHtml(reply)}</div>
+          <div>
+            <button type="button" class="btn btn-secondary btn-snippet" data-copy-url="${escapeHtml(reply)}" data-copy-msg="Reply copied. Paste it on the PR.">${uiIcon('copy', '', 12)} Copy reply</button>
+          </div>
+        </div>
+      ` : ''}
+    `;
+  }
+
   // -------------------------------------------------------------------------
   // Fork Execution (Local CLI or Demo Simulation)
   // -------------------------------------------------------------------------
@@ -954,6 +1244,7 @@
 
       loadGeneration++;
       triageData = null;
+      maintainerData = null;
       selectedItem = null;
       flatItemsList = [];
       if (listContainer) listContainer.innerHTML = '';
@@ -1145,6 +1436,10 @@
 
   btnRefresh.addEventListener('click', () => loadTriage(true));
 
+  modeButtons.forEach(btn => {
+    btn.addEventListener('click', () => switchView(btn.getAttribute('data-view')));
+  });
+
   if (btnThemeToggle) {
     btnThemeToggle.addEventListener('click', toggleTheme);
   }
@@ -1206,5 +1501,6 @@
   window.toggleTheme = toggleTheme;
 
   consumeAuthErrorParam();
+  applyViewChrome();
   loadTriage(false);
 })();

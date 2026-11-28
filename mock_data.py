@@ -676,3 +676,135 @@ def get_mock_triage_data() -> dict[str, Any]:
             "points_at_risk": sum(1 for c in claims if c["points_at_risk"]),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Maintainer Mode demo
+# ---------------------------------------------------------------------------
+
+def _mock_incoming_pr(
+    now: datetime,
+    *,
+    repo: str,
+    number: int,
+    title: str,
+    author: str,
+    hours_ago: float,
+    association: str = "CONTRIBUTOR",
+    linked: list[tuple[int, list[str]]] | None = None,
+    additions: int = 60,
+    deletions: int = 12,
+    paths: list[str] | None = None,
+    changed_files: int | None = None,
+    ci: tuple[int, int, int] | None = (6, 0, 0),
+    draft: bool = False,
+    body: str = "",
+) -> dict[str, Any]:
+    """Raw GitHub-shaped PR; run through core.evaluate_incoming_pr so the demo uses real logic."""
+    paths = list(paths or ["src/main.py"])
+    total_files = changed_files if changed_files is not None else len(paths)
+    # GitHub returns up to 100 file paths; pad the sample so it matches the file count.
+    paths += [f"src/generated/module_{i}.ts" for i in range(len(paths), min(total_files, 100))]
+    nodes = []
+    if ci is not None:
+        passed, failed, pending = ci
+        nodes = (
+            [{"__typename": "CheckRun", "conclusion": "SUCCESS", "status": "COMPLETED"}] * passed
+            + [{"__typename": "CheckRun", "conclusion": "FAILURE", "status": "COMPLETED"}] * failed
+            + [{"__typename": "CheckRun", "conclusion": None, "status": "IN_PROGRESS"}] * pending
+        )
+    rollup = {"state": "SUCCESS", "contexts": {"totalCount": len(nodes), "nodes": nodes}} if nodes else None
+    created = now - timedelta(hours=hours_ago)
+    return {
+        "number": number,
+        "title": title,
+        "url": f"https://github.com/{repo}/pull/{number}",
+        "isDraft": draft,
+        "createdAt": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "body": body,
+        "author": {"__typename": "User", "login": author},
+        "authorAssociation": association,
+        "isCrossRepository": True,
+        "baseRefName": "dev",
+        "headRefName": f"fix-{number}",
+        "repository": {"nameWithOwner": repo, "defaultBranchRef": {"name": "dev"}},
+        "additions": additions,
+        "deletions": deletions,
+        "changedFiles": total_files,
+        "files": {"nodes": [{"path": p} for p in paths]},
+        "closingIssuesReferences": {"nodes": [
+            {"number": n, "repository": {"nameWithOwner": repo},
+             "assignees": {"nodes": [{"login": a} for a in assignees]}}
+            for n, assignees in (linked or [])
+        ]},
+        "commits": {"nodes": [{"commit": {
+            "committedDate": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "statusCheckRollup": rollup,
+        }}]},
+    }
+
+
+def get_mock_maintainer_data() -> dict[str, Any]:
+    from core import MAINTAINER_BUCKETS, evaluate_incoming_pr
+
+    now = datetime.now(timezone.utc)
+    api = "demo-contributor/payout-router"
+    web = "lagos-oss/wave-dashboard"
+    raw = [
+        # Clean: assigned, small diff, CI green.
+        _mock_incoming_pr(now, repo=api, number=58, title="fix: retry webhook delivery on 502 from payout provider",
+                          author="ada-builds", hours_ago=3, linked=[(51, ["ada-builds"])],
+                          paths=["router/webhooks.py", "tests/test_webhooks.py"], ci=(8, 0, 0)),
+        _mock_incoming_pr(now, repo=web, number=212, title="feat: show wave deadline countdown on issue cards",
+                          author="tobi-dev", hours_ago=20, linked=[(198, ["tobi-dev"])],
+                          paths=["app/components/IssueCard.tsx", "app/lib/time.ts"], additions=140, deletions=22,
+                          ci=(6, 0, 0)),
+        # Kaycee's nightmare: never assigned, 3,000-line diff, touches package.json and CI.
+        _mock_incoming_pr(now, repo=web, number=219, title="refactor: complete rewrite of dashboard state management",
+                          author="quickfix-9000", hours_ago=6, association="FIRST_TIME_CONTRIBUTOR",
+                          linked=[(201, ["tobi-dev"])], additions=3120, deletions=40, changed_files=58,
+                          paths=["package.json", "package-lock.json", ".github/workflows/deploy.yml",
+                                 "app/store/index.ts", "scripts/postinstall.sh"], ci=None),
+        # No linked issue from a first-timer: can't verify, and risky.
+        _mock_incoming_pr(now, repo=api, number=61, title="fix typo and improve performance",
+                          author="new-hand-22", hours_ago=9, association="FIRST_TIME_CONTRIBUTOR",
+                          paths=["router/core.py", "requirements.txt"], additions=410, deletions=380, ci=None),
+        # Assigned in practice, but forgot `Closes #N`: send it back.
+        _mock_incoming_pr(now, repo=api, number=57, title="feat: add idempotency keys to batch payout endpoint",
+                          author="kemi-o", hours_ago=30, body="Implements the idempotency work we discussed.",
+                          paths=["router/batch.py", "tests/test_batch.py"], ci=(7, 0, 0)),
+        # Assigned, linked, but CI 4/10.
+        _mock_incoming_pr(now, repo=web, number=215, title="perf: virtualize the contributor leaderboard",
+                          author="ifeoma-ui", hours_ago=44, linked=[(190, ["ifeoma-ui"])],
+                          paths=["app/components/Leaderboard.tsx"], additions=260, deletions=90, ci=(4, 6, 0)),
+        # Closes two issues but was only assigned one.
+        _mock_incoming_pr(now, repo=api, number=60, title="feat: currency rounding + refund reconciliation",
+                          author="dayo-codes", hours_ago=14, linked=[(44, ["dayo-codes"]), (45, ["kemi-o"])],
+                          paths=["router/money.py", "router/refunds.py"], additions=320, deletions=48, ci=(9, 1, 0)),
+        # Draft.
+        _mock_incoming_pr(now, repo=web, number=220, title="wip: dark mode for wave dashboard",
+                          author="tobi-dev", hours_ago=2, linked=[(205, ["tobi-dev"])], draft=True,
+                          paths=["app/styles/theme.css"], ci=(2, 0, 3)),
+    ]
+
+    buckets: dict[str, list] = {b: [] for b in MAINTAINER_BUCKETS}
+    for pr in raw:
+        item = evaluate_incoming_pr(pr, "demo-contributor")
+        if item:
+            buckets[item["bucket"]].append(item)
+    for items in buckets.values():
+        items.sort(key=lambda i: i.get("created_at") or "", reverse=True)
+
+    return {
+        "username": "demo-contributor",
+        "view": "maintainer",
+        "maintainer": buckets,
+        "summary": {
+            "suspicious": len(buckets["SUSPICIOUS"]),
+            "bounce_back": len(buckets["BOUNCE_BACK"]),
+            "review_now": len(buckets["REVIEW_NOW"]),
+            "drafts": len(buckets["DRAFTS"]),
+            "repos_scanned": 2,
+            "repos_truncated": False,
+        },
+    }
