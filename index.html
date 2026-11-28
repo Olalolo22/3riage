@@ -95,9 +95,27 @@
           <span class="list-title" id="list-title">All Items</span>
           <div class="list-header-right">
             <button type="button" class="btn-external-toggle" id="btn-external-only" aria-pressed="false" title="Hide PRs and issues in repositories you own">External only</button>
+            <button type="button" class="btn-external-toggle hidden" id="btn-maint-rules" aria-expanded="false" aria-controls="maint-rules" title="Set your own CI and diff-size rules">Rules</button>
             <span class="list-counter" id="list-counter">0 items</span>
           </div>
         </div>
+        <form class="maint-rules hidden" id="maint-rules" novalidate>
+          <label class="maint-rule">
+            <span>CI must pass</span>
+            <input type="number" id="rule-ci-min" min="0" max="100" step="5" inputmode="numeric" aria-label="Minimum percent of finished CI checks that must pass">
+            <span>% of finished checks</span>
+          </label>
+          <label class="maint-rule">
+            <span>Large diff over</span>
+            <input type="number" id="rule-large-diff" min="10" max="1000000" step="100" inputmode="numeric" aria-label="Changed lines above which a PR is large">
+            <span>lines</span>
+          </label>
+          <div class="maint-rules-actions">
+            <button type="submit" class="btn btn-primary btn-small">Apply</button>
+            <button type="button" class="btn btn-secondary btn-small" id="rule-reset">Reset to defaults</button>
+          </div>
+          <div class="maint-rules-note">Saved in this browser only. Nothing is stored on the server.</div>
+        </form>
         <div class="list-scroll" id="list-container">
           <!-- Skeletons rendered by JS -->
           <div class="skeleton-row"></div>

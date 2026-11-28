@@ -744,9 +744,12 @@ def _mock_incoming_pr(
     }
 
 
-def get_mock_maintainer_data() -> dict[str, Any]:
-    from core import MAINTAINER_BUCKETS, evaluate_incoming_pr
+def get_mock_maintainer_data(
+    ci_min_ratio: float | None = None, large_diff_lines: int | None = None
+) -> dict[str, Any]:
+    from core import MAINTAINER_BUCKETS, evaluate_incoming_pr, maintainer_settings
 
+    settings = maintainer_settings(ci_min_ratio, large_diff_lines)
     now = datetime.now(timezone.utc)
     api = "demo-contributor/payout-router"
     web = "lagos-oss/wave-dashboard"
@@ -789,7 +792,7 @@ def get_mock_maintainer_data() -> dict[str, Any]:
 
     buckets: dict[str, list] = {b: [] for b in MAINTAINER_BUCKETS}
     for pr in raw:
-        item = evaluate_incoming_pr(pr, "demo-contributor")
+        item = evaluate_incoming_pr(pr, "demo-contributor", settings)
         if item:
             buckets[item["bucket"]].append(item)
     for items in buckets.values():
@@ -807,4 +810,5 @@ def get_mock_maintainer_data() -> dict[str, Any]:
             "repos_scanned": 2,
             "repos_truncated": False,
         },
+        "settings": settings,
     }

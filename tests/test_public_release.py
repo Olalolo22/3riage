@@ -198,6 +198,32 @@ class TestAppOAuthAndMultiUserIsolation(unittest.TestCase):
         contributor = client.get("/api/triage?demo=true").get_json()
         self.assertIn("prs", contributor["data"])
 
+    def test_demo_maintainer_rules_from_query(self):
+        c = app_module.app.test_client()
+        d = c.get("/api/triage?demo=true&view=maintainer&ci_min=80&large_diff=300").get_json()["data"]
+        self.assertEqual(d["settings"]["ci_min_ratio"], 0.8)
+        self.assertEqual(d["settings"]["large_diff_lines"], 300)
+        bad = c.get("/api/triage?demo=true&view=maintainer&ci_min=abc&large_diff=-4").get_json()["data"]
+        self.assertEqual((bad["settings"]["ci_min_ratio"], bad["settings"]["large_diff_lines"]), (0.6, 1000))
+
+    @patch("app.run_maintainer_triage")
+    def test_maintainer_rules_passed_through_and_cached_per_rule(self, mock_run_maint):
+        mock_run_maint.side_effect = lambda client, **kw: {
+            "username": client.username, "view": "maintainer",
+            "maintainer": {"SUSPICIOUS": [], "BOUNCE_BACK": [], "REVIEW_NOW": [], "DRAFTS": []},
+            "summary": {}, "settings": {},
+        }
+        c = app_module.app.test_client()
+        c.set_cookie(auth.SESSION_COOKIE_NAME,
+                     auth.encrypt_cookie_payload({"access_token": "token_R", "username": "kaycee", "refresh_token": ""}))
+        c.get("/api/triage?view=maintainer&ci_min=70&large_diff=400")
+        kwargs = mock_run_maint.call_args.kwargs
+        self.assertEqual((kwargs["ci_min_ratio"], kwargs["large_diff_lines"]), (0.7, 400))
+        # Different rules must not be served from the other rules' cache.
+        c.get("/api/triage?view=maintainer&ci_min=90&large_diff=400")
+        self.assertEqual(mock_run_maint.call_count, 2)
+        self.assertTrue(c.get("/api/triage?view=maintainer&ci_min=70&large_diff=400").get_json()["cached"])
+
     @patch("app.run_maintainer_triage")
     @patch("app.run_triage")
     def test_maintainer_view_cached_separately_from_contributor(self, mock_run_triage, mock_run_maint):
@@ -447,6 +473,13 @@ class TestCLIAndPackagingSync(unittest.TestCase):
         self.assertEqual(data["prs"]["WAITING_ON_THEM"][0]["repo"], "ext-org/ext-repo")
         self.assertEqual(data["summary"]["ready_to_claim"], 1)
         self.assertEqual(data["claims"][0]["repo"], "ext-org/ext-repo")
+
+    def test_user_facing_text_has_no_hardcoded_thresholds_or_drips_only_wording(self):
+        js = (ROOT_DIR / "static" / "main.js").read_text(encoding="utf-8")
+        for stale in ("6 of 10", "up to 40", "first 100", "Drips can settle", "Drips Discord"):
+            self.assertNotIn(stale, js, stale)
+        cli = (ROOT_DIR / "triage.py").read_text(encoding="utf-8")
+        self.assertNotIn("Drips Discord", cli)
 
     def test_graphql_queries_fetch_link_bot_and_ci_fields(self):
         pr_q = GitHubClient._PR_QUERY

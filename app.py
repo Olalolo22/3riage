@@ -47,7 +47,7 @@ from auth import (
     token_cache_id,
     verify_state_cookie,
 )
-from core import run_maintainer_triage, run_triage
+from core import maintainer_settings, run_maintainer_triage, run_triage
 from github_client import GitHubClient
 from mock_data import get_mock_maintainer_data, get_mock_triage_data
 
@@ -282,11 +282,21 @@ def _execute_triage(force_refresh_override: bool = False):
         return _auth_error_response(auth_error_info)
 
     maintainer_view = request.args.get("view", "").lower() == "maintainer"
+    # Per-maintainer thresholds: ?ci_min=70 (percent) & large_diff=500 (lines). Invalid -> defaults.
+    try:
+        ci_min_ratio = float(request.args["ci_min"]) / 100.0 if request.args.get("ci_min") else None
+    except ValueError:
+        ci_min_ratio = None
+    m_settings = maintainer_settings(ci_min_ratio, request.args.get("large_diff") or None)
 
     if auth_mode == "demo" or not token:
         return jsonify(
             _build_triage_payload(
-                data=get_mock_maintainer_data() if maintainer_view else get_mock_triage_data(),
+                data=(
+                    get_mock_maintainer_data(m_settings["ci_min_ratio"], m_settings["large_diff_lines"])
+                    if maintainer_view
+                    else get_mock_triage_data()
+                ),
                 cached=False,
                 is_demo=True,
                 auth_mode="demo",
@@ -308,7 +318,11 @@ def _execute_triage(force_refresh_override: bool = False):
         min_age_hours = 0.0
 
     user_cid = token_cache_id(token)
-    view_key = "maintainer" if maintainer_view else "contributor"
+    view_key = (
+        f"maintainer:{m_settings['ci_min_ratio']}:{m_settings['large_diff_lines']}"
+        if maintainer_view
+        else "contributor"
+    )
     cache_key = f"{user_cid}:{view_key}:{include_drafts}:{repo_filter}:{min_age_hours}"
     now = time.time()
 
@@ -337,7 +351,13 @@ def _execute_triage(force_refresh_override: bool = False):
         client = GitHubClient(token=token, username=resolved_username, ignore_bots=ignore_bots)
         if maintainer_view:
             # Read-only: lists incoming PRs on repos you can merge into. Never writes.
-            data = run_maintainer_triage(client=client, ignore_repos=ignore_repos, only_repos=only_repos)
+            data = run_maintainer_triage(
+                client=client,
+                ignore_repos=ignore_repos,
+                only_repos=only_repos,
+                ci_min_ratio=m_settings["ci_min_ratio"],
+                large_diff_lines=m_settings["large_diff_lines"],
+            )
         else:
             data = run_triage(
                 client=client,

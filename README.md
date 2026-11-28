@@ -113,6 +113,8 @@ DRAFTS       — Not ready yet.
 
 Suspicious and bounce-back PRs come with a suggested reply you can copy and paste on the PR yourself.
 
+**Your own rules.** The defaults are Kaycee's: CI must pass 60% of finished checks, and over 1,000 changed lines counts as large. Change them with the **Rules** button in Maintainer Mode (saved in your browser only), with `?ci_min=70&large_diff=500` in the page URL, or with `3riage --mode maintainer --ci-min 70 --large-diff 500`.
+
 Scope: public repos where you have write, maintain or admin access and at least one open PR, up to 40 of the most recently active. PRs from bots and from you are hidden.
 
 *Thanks to Kaycee, a Drips Wave maintainer, whose walkthrough feedback shaped these checks.*

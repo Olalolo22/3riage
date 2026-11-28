@@ -171,7 +171,7 @@
     const base = escapeHtml(item.base_branch || 'another branch');
     const def = escapeHtml(item.default_branch || 'the default branch');
     let headline = 'No linked issue';
-    let body = 'Add a closing line to the PR description so GitHub links this PR to its issue and Drips can settle your points.';
+    let body = 'Add a closing line to the PR description so GitHub links this PR to its issue. Wave and bounty programs usually need that link to pay out.';
     if (item.closing_link_reason === 'non_default_base') {
       headline = 'Closing keyword will not work on this branch';
       body = `This PR targets <code>${base}</code>, not the default branch <code>${def}</code>, so GitHub ignores closing keywords. Ask the maintainer to link the issue manually from the PR's Development section.`;
@@ -217,6 +217,44 @@
     return { red: 'pill-red', yellow: 'pill-yellow', green: 'pill-green' }[tone] || 'pill-muted';
   }
 
+  // Thresholds come from the server response, so text always matches the rules applied.
+  function ciBarPercent() {
+    const s = maintainerData && maintainerData.settings;
+    return s ? Math.round(Number(s.ci_min_ratio) * 100) : 60;
+  }
+
+  // Per-browser maintainer rules. Page URL (?ci_min=70&large_diff=500) wins over saved rules.
+  function loadMaintRules() {
+    const rules = {};
+    try {
+      Object.assign(rules, JSON.parse(localStorage.getItem('3riage-maint-rules') || '{}'));
+    } catch (e) {}
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('ci_min')) rules.ci_min = params.get('ci_min');
+    if (params.get('large_diff')) rules.large_diff = params.get('large_diff');
+    const out = {};
+    const ci = parseInt(rules.ci_min, 10);
+    const diff = parseInt(rules.large_diff, 10);
+    if (Number.isFinite(ci) && ci >= 0 && ci <= 100) out.ci_min = ci;
+    if (Number.isFinite(diff) && diff >= 10 && diff <= 1000000) out.large_diff = diff;
+    return out;
+  }
+
+  function saveMaintRules(rules) {
+    try {
+      if (rules && Object.keys(rules).length) localStorage.setItem('3riage-maint-rules', JSON.stringify(rules));
+      else localStorage.removeItem('3riage-maint-rules');
+    } catch (e) {}
+  }
+
+  function syncRulesForm() {
+    const s = (maintainerData && maintainerData.settings) || {};
+    const ciInput = document.getElementById('rule-ci-min');
+    const diffInput = document.getElementById('rule-large-diff');
+    if (ciInput && s.ci_min_ratio !== undefined) ciInput.value = Math.round(Number(s.ci_min_ratio) * 100);
+    if (diffInput && s.large_diff_lines !== undefined) diffInput.value = Number(s.large_diff_lines);
+  }
+
   function hasReason(item, code) {
     return (item.reasons || []).some(r => r.code === code);
   }
@@ -238,7 +276,8 @@
       lines.push(`There is no linked issue, so you can't check whether ${who} was assigned.`);
     }
     if (item.large_diff) {
-      lines.push(`Large change: +${formatCount(item.additions)} / -${formatCount(item.deletions)} across ${formatCount(item.changed_files)} files.`);
+      const files = Number(item.changed_files) || 0;
+      lines.push(`Large change: +${formatCount(item.additions)} / -${formatCount(item.deletions)} across ${formatCount(files)} file${files === 1 ? '' : 's'}.`);
     }
     if ((item.sensitive_files || []).length) {
       lines.push('It touches dependency, install or CI files, where risky code usually hides.');
@@ -246,7 +285,7 @@
     if (item.is_first_timer) lines.push('This is their first contribution to the repo.');
     if (item.ci_below_threshold) {
       const done = (Number(item.ci_passed) || 0) + (Number(item.ci_failed) || 0);
-      lines.push(`Only ${Number(item.ci_passed) || 0} of ${done} finished checks pass. Your bar is 6 of 10.`);
+      lines.push(`Only ${Number(item.ci_passed) || 0} of ${done} finished checks pass. Your bar is ${ciBarPercent()}%.`);
     } else if (item.ci_state === 'AWAITING_APPROVAL') {
       lines.push("CI hasn't run yet. Workflows may be waiting for your approval.");
     }
@@ -340,7 +379,12 @@
       const isForcedDemo = forceDemo || params.get('demo') === 'true' || params.get('demo') === '1';
       const qs = new URLSearchParams();
       if (isForcedDemo) qs.set('demo', 'true');
-      if (currentView === 'maintainer') qs.set('view', 'maintainer');
+      if (currentView === 'maintainer') {
+        qs.set('view', 'maintainer');
+        const rules = loadMaintRules();
+        if (rules.ci_min !== undefined) qs.set('ci_min', String(rules.ci_min));
+        if (rules.large_diff !== undefined) qs.set('large_diff', String(rules.large_diff));
+      }
       const query = qs.toString() ? `?${qs.toString()}` : '';
       const url = forceRefresh ? `/api/refresh${query}` : `/api/triage${query}`;
       const method = forceRefresh ? 'POST' : 'GET';
@@ -349,7 +393,9 @@
 
       if (res.status === 401) {
         showToast((json && json.error) || 'GitHub session expired. Showing demo mode.', 6000);
-        const fallbackUrl = currentView === 'maintainer' ? '/api/triage?demo=true&view=maintainer' : '/api/triage?demo=true';
+        const fallbackUrl = currentView === 'maintainer'
+          ? `/api/triage?demo=true&${qs.toString()}`
+          : '/api/triage?demo=true';
         const fallback = await fetchJsonWithTimeout(fallbackUrl, {}, 15000);
         if (requestGen !== loadGeneration) return;
         if (fallback.json && fallback.json.status === 'ok') {
@@ -405,6 +451,7 @@
   function applyTriageResponse(json) {
     if (json.data && json.data.view === 'maintainer') {
       maintainerData = json.data;
+      syncRulesForm();
     } else {
       triageData = json.data;
     }
@@ -455,6 +502,13 @@
     if (contributorFilters) contributorFilters.classList.toggle('hidden', isMaint);
     if (maintainerFilters) maintainerFilters.classList.toggle('hidden', !isMaint);
     if (btnExternalOnly) btnExternalOnly.classList.toggle('hidden', isMaint);
+    const rulesBtn = document.getElementById('btn-maint-rules');
+    const rulesForm = document.getElementById('maint-rules');
+    if (rulesBtn) rulesBtn.classList.toggle('hidden', !isMaint);
+    if (rulesForm && !isMaint) {
+      rulesForm.classList.add('hidden');
+      if (rulesBtn) rulesBtn.setAttribute('aria-expanded', 'false');
+    }
     activeFilter = isMaint ? 'm_all' : 'all';
     filterTabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-filter') === activeFilter));
   }
@@ -639,7 +693,8 @@
     if (flatItemsList.length === 0) {
       let emptyText = searchQuery ? 'No items match your search filter.' : 'No items in this view.';
       if (!searchQuery && currentView === 'maintainer' && activeFilter === 'm_all') {
-        emptyText = 'No open PRs from other people on repos you maintain.<br><span style="font-size: 11px;">3riage checks public repos where you have write access (up to 40, most recently active first).</span>';
+        const maxRepos = Number((maintainerData && maintainerData.settings && maintainerData.settings.max_repos) || 0);
+        emptyText = `No open PRs from other people on repos you maintain.<br><span style="font-size: 11px;">3riage checks public repos where you have write access${maxRepos ? ` (up to ${maxRepos}, most recently active first)` : ''}.</span>`;
       }
       listContainer.innerHTML = `
         <div style="padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 12px; line-height: 1.6;">
@@ -1052,7 +1107,7 @@
         <div class="decision-subtext">This pull request merged ${escapeHtml(mergedWhen)}. ${atRisk
           ? `It was not linked to an issue${item.closing_link_reason === 'non_default_base'
               ? ` (it targeted <code>${escapeHtml(item.base_branch || 'another branch')}</code>, where closing keywords are ignored)`
-              : ''}, so Drips may not settle points for it automatically. Raise it in the Drips Discord with the PR and issue links.`
+              : ''}, so Wave or bounty points may not settle automatically. Raise it with the maintainers or in the program's channel, with the PR and issue links.`
           : 'Submit this link in your community Discord or Wave channel to claim rewards.'}</div>
       </div>
 
@@ -1138,7 +1193,7 @@
           <div class="detail-section-title">Sensitive Files Changed</div>
           <div class="feedback-quote sensitive-list">
             ${sensitive.map(p => `<code>${escapeHtml(p)}</code>`).join('')}
-            ${item.files_partial ? '<div class="sensitive-note">Only the first 100 changed files were checked.</div>' : ''}
+            ${item.files_partial ? `<div class="sensitive-note">Only the first ${Number(item.files_scanned) || 0} of ${formatCount(item.changed_files)} changed files were checked.</div>` : ''}
           </div>
         </div>
       ` : ''}
@@ -1439,6 +1494,37 @@
   modeButtons.forEach(btn => {
     btn.addEventListener('click', () => switchView(btn.getAttribute('data-view')));
   });
+
+  const btnMaintRules = document.getElementById('btn-maint-rules');
+  const maintRulesForm = document.getElementById('maint-rules');
+  if (btnMaintRules && maintRulesForm) {
+    btnMaintRules.addEventListener('click', () => {
+      const open = maintRulesForm.classList.toggle('hidden') === false;
+      btnMaintRules.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) syncRulesForm();
+    });
+    maintRulesForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const ci = parseInt(document.getElementById('rule-ci-min').value, 10);
+      const diff = parseInt(document.getElementById('rule-large-diff').value, 10);
+      if (!(ci >= 0 && ci <= 100) || !(diff >= 10 && diff <= 1000000)) {
+        showToast('CI must be 0 to 100%, and large diff 10 to 1,000,000 lines.');
+        return;
+      }
+      saveMaintRules({ ci_min: ci, large_diff: diff });
+      maintRulesForm.classList.add('hidden');
+      btnMaintRules.setAttribute('aria-expanded', 'false');
+      showToast(`Rules applied: CI ${ci}%, large diff over ${diff.toLocaleString('en-US')} lines.`);
+      loadTriage(false);
+    });
+    document.getElementById('rule-reset').addEventListener('click', () => {
+      saveMaintRules(null);
+      maintRulesForm.classList.add('hidden');
+      btnMaintRules.setAttribute('aria-expanded', 'false');
+      showToast('Rules reset to defaults.');
+      loadTriage(false);
+    });
+  }
 
   if (btnThemeToggle) {
     btnThemeToggle.addEventListener('click', toggleTheme);

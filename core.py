@@ -854,7 +854,7 @@ def build_claims_shelf(merged_prs: list[dict], days: int = 14) -> list[dict]:
                 "merged_days_ago": _days_ago(merged_at),
                 "merged_at": _iso_utc(merged_at),
                 **link,
-                # Merged with no linked issue: Drips/bounty settlement usually can't
+                # Merged with no linked issue: Wave/bounty settlement usually can't
                 # match it to an issue automatically.
                 "points_at_risk": link["has_closing_link"] is False,
             }
@@ -943,8 +943,36 @@ def build_fork_report(
 # Maintainer Mode — triage incoming PRs on repos you can merge into
 # ---------------------------------------------------------------------------
 
+# Defaults only. Each maintainer can override them per request
+# (web: ?ci_min=70&large_diff=500, CLI: --ci-min / --large-diff).
 MAINTAINER_CI_MIN_RATIO = 0.6       # Kaycee: "if there are 10 CI, 6 must pass"
 MAINTAINER_LARGE_DIFF_LINES = 1000  # additions + deletions
+MAINTAINER_FILES_SCANNED = 100      # GitHub returns at most this many file paths per PR here
+
+
+def maintainer_settings(ci_min_ratio: float | None = None, large_diff_lines: int | None = None) -> dict:
+    """
+    Clamp user-supplied thresholds into sane ranges, falling back to defaults.
+    ci_min_ratio: 0.0–1.0. large_diff_lines: 10–1,000,000.
+    """
+    try:
+        ratio = float(ci_min_ratio) if ci_min_ratio is not None else MAINTAINER_CI_MIN_RATIO
+    except (TypeError, ValueError):
+        ratio = MAINTAINER_CI_MIN_RATIO
+    if not 0.0 <= ratio <= 1.0:
+        ratio = MAINTAINER_CI_MIN_RATIO
+    try:
+        lines = int(large_diff_lines) if large_diff_lines is not None else MAINTAINER_LARGE_DIFF_LINES
+    except (TypeError, ValueError):
+        lines = MAINTAINER_LARGE_DIFF_LINES
+    if not 10 <= lines <= 1_000_000:
+        lines = MAINTAINER_LARGE_DIFF_LINES
+    return {
+        "ci_min_ratio": round(ratio, 4),
+        "large_diff_lines": lines,
+        "files_scanned": MAINTAINER_FILES_SCANNED,
+        "max_repos": GitHubClient.MAINTAINER_MAX_REPOS,
+    }
 
 # Files where malicious or risky changes usually hide: dependencies, install
 # scripts, build and CI config. Matched against the full path and the file name.
@@ -989,12 +1017,14 @@ def _assignment_check(pr: dict, author_lo: str) -> tuple[str, list[str], list[st
     return "partly_assigned", assigned_on, not_assigned_on
 
 
-def evaluate_incoming_pr(pr: dict, me: str) -> dict | None:
+def evaluate_incoming_pr(pr: dict, me: str, settings: dict | None = None) -> dict | None:
     """
     Score one incoming PR on Kaycee's four checks (assignment, blast radius,
     linked issue, CI ratio) plus first-timer and sensitive-file signals.
     Returns None for PRs that should not be shown (your own, or bot-authored).
+    settings: output of maintainer_settings(); defaults when omitted.
     """
+    settings = settings or maintainer_settings()
     author = pr.get("author") or {}
     author_login = author.get("login", "") or "ghost"
     author_lo = author_login.lower()
@@ -1010,13 +1040,16 @@ def evaluate_incoming_pr(pr: dict, me: str) -> dict | None:
     changed_files = pr.get("changedFiles") or 0
     paths = [f.get("path", "") for f in (pr.get("files") or {}).get("nodes", []) or []]
     sensitive = _sensitive_paths(paths)
-    large_diff = additions + deletions > MAINTAINER_LARGE_DIFF_LINES
+    large_diff = additions + deletions > settings["large_diff_lines"]
     association = (pr.get("authorAssociation") or "").upper()
     first_timer = association in _FIRST_TIMER_ASSOCIATIONS
     ci = _ci_summary(pr)
 
     completed = (ci["ci_passed"] or 0) + (ci["ci_failed"] or 0)
-    ci_below = bool(ci["ci_failed"]) and completed > 0 and (ci["ci_passed"] or 0) / completed < MAINTAINER_CI_MIN_RATIO
+    ci_below = (
+        bool(ci["ci_failed"]) and completed > 0
+        and (ci["ci_passed"] or 0) / completed < settings["ci_min_ratio"]
+    )
 
     reasons: list[dict] = []
 
@@ -1078,6 +1111,7 @@ def evaluate_incoming_pr(pr: dict, me: str) -> dict | None:
         "large_diff": large_diff,
         "sensitive_files": sensitive,
         "files_partial": changed_files > len(paths),
+        "files_scanned": len(paths),
         **ci,
         "ci_below_threshold": ci_below,
         "reasons": reasons,
@@ -1091,6 +1125,8 @@ def run_maintainer_triage(
     client: GitHubClient,
     ignore_repos: set[str] | None = None,
     only_repos: set[str] | None = None,
+    ci_min_ratio: float | None = None,
+    large_diff_lines: int | None = None,
 ) -> dict:
     """
     Read-only triage of PRs other people opened on repos you can merge into.
@@ -1099,6 +1135,7 @@ def run_maintainer_triage(
     ignore_repos = {r.lower() for r in (ignore_repos or set())}
     only_repos = {r.lower() for r in (only_repos or set())}
 
+    settings = maintainer_settings(ci_min_ratio, large_diff_lines)
     repos, truncated = client.get_maintained_repos_with_open_prs()
     repos = [
         r for r in repos
@@ -1108,7 +1145,7 @@ def run_maintainer_triage(
 
     buckets: dict[str, list] = {b: [] for b in MAINTAINER_BUCKETS}
     for pr in prs:
-        item = evaluate_incoming_pr(pr, client.username)
+        item = evaluate_incoming_pr(pr, client.username, settings)
         if item:
             buckets[item["bucket"]].append(item)
     for items in buckets.values():
@@ -1126,6 +1163,8 @@ def run_maintainer_triage(
             "repos_scanned": len(repos),
             "repos_truncated": truncated,
         },
+        # The thresholds actually used, so the UI never shows stale numbers.
+        "settings": settings,
     }
 
 
